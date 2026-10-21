@@ -134,6 +134,7 @@ def area_stories(kind: str, key: str) -> List[dict]:
                 SELECT {", ".join("a." + c.strip() for c in ARTICLE_COLUMNS.split(","))}
                 FROM articles a
                 WHERE a.is_processed AND a.macro_tag IS NOT NULL AND a.macro_tag <> 'Off-Topic'
+                  AND a.duplicate_of IS NULL
                   AND (a.on_topic_score IS NULL OR a.on_topic_score >= 0.40)
                   AND a.published_at >= NOW() - make_interval(days => %(days)s)
                   AND {match}

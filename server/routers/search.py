@@ -45,6 +45,7 @@ def execute_hybrid_search(q: str, grouped: bool = False, limit: int = 12):
                1.0 / (60.0 + ROW_NUMBER() OVER (ORDER BY embedding <=> %(q_vec)s::vector ASC)) AS score
         FROM articles
         WHERE is_processed = TRUE 
+          AND duplicate_of IS NULL
           AND macro_tag IS NOT NULL
           AND macro_tag != 'Off-Topic'
           AND embedding IS NOT NULL
@@ -60,6 +61,7 @@ def execute_hybrid_search(q: str, grouped: bool = False, limit: int = 12):
                )) AS score
         FROM articles
         WHERE is_processed = TRUE 
+          AND duplicate_of IS NULL
           AND macro_tag IS NOT NULL
           AND macro_tag != 'Off-Topic'
           AND to_tsvector('english', title || ' ' || clean_text) @@ websearch_to_tsquery('english', %(q)s)
@@ -80,6 +82,7 @@ def execute_hybrid_search(q: str, grouped: bool = False, limit: int = 12):
                )) AS score
         FROM articles
         WHERE is_processed = TRUE 
+          AND duplicate_of IS NULL
           AND macro_tag IS NOT NULL
           AND macro_tag != 'Off-Topic'
           AND cardinality(%(kw_like_patterns)s::text[]) > 0

@@ -62,6 +62,13 @@ ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_status VARCHAR(50);
 ALTER TABLE articles ADD COLUMN IF NOT EXISTS fact_check_cache JSONB;
 ALTER TABLE articles ADD COLUMN IF NOT EXISTS raw_scraped_text TEXT;
 ALTER TABLE articles ADD COLUMN IF NOT EXISTS executive_briefing TEXT;
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS duplicate_of UUID REFERENCES articles(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_articles_duplicate_of ON articles (duplicate_of);
+CREATE INDEX IF NOT EXISTS idx_articles_feed_primary ON articles (published_at DESC) WHERE duplicate_of IS NULL;
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_attempts INT DEFAULT 0;
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_last_attempt_at TIMESTAMP WITH TIME ZONE;
+CREATE INDEX IF NOT EXISTS idx_articles_image_healing ON articles (published_at DESC, created_at DESC) 
+WHERE (image_status = 'gradient_fallback' OR image_url IS NULL) AND image_attempts < 3;
 
 
 -- 3. Social Paragraph Annotations

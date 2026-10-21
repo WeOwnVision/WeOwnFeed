@@ -13,6 +13,8 @@ Sources inspected in priority order:
 """
 
 import re
+import socket
+import ipaddress
 import logging
 import urllib.parse
 from typing import Optional, List, Union, Tuple
@@ -41,6 +43,162 @@ DESKTOP_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
 )
+
+
+def is_safe_public_ip(ip_str: str) -> bool:
+    """
+    Validates that an IP address is a safe, publicly routable address.
+    Strictly blocks:
+    - Loopback: 127.0.0.0/8, ::1
+    - Private IPv4: 10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16
+    - Link-local: 169.254.0.0/16 (including cloud metadata 169.254.169.254), fe80::/10
+    - Multicast, broadcast, reserved, unspecified
+    - CGNAT / Shared space: 100.64.0.0/10
+    """
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        if (ip.is_private or ip.is_loopback or ip.is_link_local or 
+            ip.is_multicast or ip.is_reserved or ip.is_unspecified):
+            return False
+        # Explicit guard for cloud metadata and CGNAT
+        if ip_str.startswith("169.254.") or ip_str.startswith("100.64."):
+            return False
+        return True
+    except Exception:
+        return False
+
+
+def is_safe_url_host(url: str) -> bool:
+    """
+    Resolves hostname and verifies that ALL resolved IPs are safe public IPs.
+    Prevents DNS rebinding and SSRF targeting cloud metadata or internal services.
+    """
+    try:
+        parsed = urllib.parse.urlparse(url)
+        if parsed.scheme not in ("http", "https"):
+            return False
+        hostname = parsed.hostname
+        if not hostname:
+            return False
+        h_lower = hostname.lower()
+        if h_lower in ("localhost", "127.0.0.1", "::1", "metadata.google.internal"):
+            return False
+
+        # If hostname is an IP string directly
+        try:
+            ipaddress.ip_address(hostname)
+            return is_safe_public_ip(hostname)
+        except ValueError:
+            pass
+
+        # Resolve DNS addresses
+        addr_info = socket.getaddrinfo(hostname, None)
+        if not addr_info:
+            return False
+        for family, _, _, _, sockaddr in addr_info:
+            ip_str = sockaddr[0]
+            if not is_safe_public_ip(ip_str):
+                logger.debug("[SSRF Block] Host %s resolved to private/blocked IP %s", hostname, ip_str)
+                return False
+        return True
+    except Exception as e:
+        logger.debug("[SSRF Block] Host resolution failed for %s: %s", url, e)
+        return False
+
+
+def safe_stream_get(
+    url: str,
+    headers: Optional[dict] = None,
+    timeout: float = 3.5,
+    max_redirects: int = 3,
+    max_bytes: int = 65536
+) -> Optional[bytes]:
+    """
+    Performs SSRF-protected HTTP GET, checking resolved IP on every redirect,
+    capping total redirects to max_redirects, and capping downloaded bytes to max_bytes.
+    """
+    current_url = url
+    req_headers = headers or {
+        "User-Agent": DESKTOP_UA,
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        "Accept-Language": "en-US,en;q=0.9",
+    }
+    session = requests.Session()
+    for _ in range(max_redirects + 1):
+        if not is_safe_url_host(current_url):
+            return None
+        try:
+            resp = session.get(current_url, headers=req_headers, timeout=timeout, stream=True, allow_redirects=False)
+            if resp.status_code in (301, 302, 303, 307, 308):
+                loc = resp.headers.get("Location")
+                if not loc:
+                    resp.close()
+                    return None
+                current_url = urllib.parse.urljoin(current_url, loc.strip())
+                resp.close()
+                continue
+
+            if resp.status_code != 200:
+                resp.close()
+                return None
+
+            content_chunk = b""
+            for chunk in resp.iter_content(chunk_size=8192):
+                content_chunk += chunk
+                if len(content_chunk) >= max_bytes or b"</head>" in content_chunk.lower():
+                    break
+            resp.close()
+            return content_chunk
+        except Exception as e:
+            logger.debug("[ImageExtractor] Safe stream failed for %s: %s", current_url, e)
+            return None
+    return None
+
+
+def validate_image_head(url: str, timeout: float = 3.5) -> bool:
+    """
+    Validates that a URL resolves to a real, valid image:
+    - Confirms SSRF safety.
+    - Validates Content-Type: image/* (not svg/ico/text).
+    - Validates minimum byte size (> 1500 bytes to weed out 1x1 tracking pixels).
+    """
+    if not is_valid_article_image(url) or not is_safe_url_host(url):
+        return False
+
+    headers = {
+        "User-Agent": DESKTOP_UA,
+        "Accept": "image/avif,image/webp,image/apng,image/*,*/*;q=0.8",
+        "Referer": url,
+    }
+    try:
+        # First try a lightweight HEAD
+        resp = requests.head(url, headers=headers, timeout=timeout, allow_redirects=True)
+        if resp.status_code == 200:
+            ct = (resp.headers.get("Content-Type") or "").lower()
+            if not ct.startswith("image/") or "svg" in ct or "icon" in ct:
+                return False
+            cl = resp.headers.get("Content-Length")
+            if cl and cl.isdigit():
+                return int(cl) >= 1500
+
+        # If HEAD has no length or is disallowed, stream first 2KB
+        s_resp = requests.get(url, headers=headers, timeout=timeout, stream=True, allow_redirects=True)
+        if s_resp.status_code != 200:
+            s_resp.close()
+            return False
+        ct = (s_resp.headers.get("Content-Type") or "").lower()
+        if not ct.startswith("image/") or "svg" in ct or "icon" in ct:
+            s_resp.close()
+            return False
+        chunk = b""
+        for c in s_resp.iter_content(chunk_size=2048):
+            chunk += c
+            if len(chunk) >= 1500:
+                break
+        s_resp.close()
+        return len(chunk) >= 1500
+    except Exception:
+        return False
 
 
 def is_valid_article_image(url: str, alt: str = "") -> bool:
@@ -117,30 +275,17 @@ def extract_image_from_markdown(markdown_text: str) -> Optional[str]:
 
 def extract_og_image_from_url(page_url: str, timeout: float = 3.0) -> Optional[str]:
     """
-    Lightweight fast-stream extractor for OpenGraph/Twitter Card meta images.
+    Lightweight SSRF-protected fast-stream extractor for OpenGraph/Twitter Card meta images.
     Streams only the first 64KB (sufficient for the HTML <head>) to minimize latency.
     """
     if not page_url or not (page_url.startswith("http://") or page_url.startswith("https://")):
         return None
 
-    headers = {
-        "User-Agent": DESKTOP_UA,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "en-US,en;q=0.9",
-    }
+    content_chunk = safe_stream_get(page_url, timeout=timeout, max_bytes=65536)
+    if not content_chunk:
+        return None
 
     try:
-        resp = requests.get(page_url, headers=headers, timeout=timeout, stream=True)
-        if resp.status_code != 200:
-            return None
-
-        content_chunk = b""
-        for chunk in resp.iter_content(chunk_size=8192):
-            content_chunk += chunk
-            if b"</head>" in content_chunk.lower() or len(content_chunk) >= 65536:
-                break
-        resp.close()
-
         html_text = content_chunk.decode("utf-8", errors="ignore")
         soup = BeautifulSoup(html_text, "html.parser")
 

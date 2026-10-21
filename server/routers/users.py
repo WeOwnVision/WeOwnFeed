@@ -189,9 +189,44 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
             ]
 
             cur.execute("""
-                SELECT id, source_feed, title, original_url, author, published_at, macro_tag, macro_tags, micro_tags, tldr, image_url, image_status
+                SELECT 
+                    a.id, a.source_feed, a.title, a.original_url, a.author, a.published_at, 
+                    a.macro_tag, a.macro_tags, a.micro_tags, a.tldr, a.image_url, a.image_status,
+                    COALESCE(
+                        (
+                            SELECT jsonb_agg(
+                                jsonb_build_object(
+                                    'id', d.id,
+                                    'source', d.source_feed,
+                                    'title', d.title,
+                                    'url', d.original_url,
+                                    'published_at', d.published_at
+                                ) ORDER BY d.published_at ASC
+                            )
+                            FROM (
+                                SELECT id, source_feed, title, original_url, published_at
+                                FROM (
+                                    SELECT DISTINCT ON (source_feed) id, source_feed, title, original_url, published_at
+                                    FROM articles
+                                    WHERE duplicate_of = a.id
+                                      AND source_feed <> a.source_feed
+                                    ORDER BY source_feed, published_at ASC
+                                ) distinct_outlets
+                                ORDER BY published_at ASC
+                                LIMIT 10
+                            ) d
+                        ),
+                        '[]'::jsonb
+                    ) AS also_published_by,
+                    (
+                        SELECT COUNT(DISTINCT x.source_feed)::int 
+                        FROM articles x 
+                        WHERE x.duplicate_of = a.id
+                          AND x.source_feed <> a.source_feed
+                    ) AS also_published_by_count
                 FROM articles a
                 WHERE a.is_processed = TRUE 
+                  AND a.duplicate_of IS NULL
                   AND a.macro_tag IS NOT NULL 
                   AND a.macro_tag != 'Off-Topic'
                   AND (a.on_topic_score IS NULL OR a.on_topic_score >= 0.40)
@@ -204,6 +239,19 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
                 ORDER BY a.published_at DESC LIMIT %s OFFSET %s;
             """, (valid_user_id, page_size, offset))
             fallback_rows = cur.fetchall()
+
+            def _parse_fallback_also_published(val):
+                if val is None:
+                    return []
+                if isinstance(val, list):
+                    return val
+                if isinstance(val, str):
+                    try:
+                        return json.loads(val)
+                    except Exception:
+                        return []
+                return []
+
             items = [
                 {
                     "id": str(r[0]), "source": r[1], "title": r[2], "url": r[3],
@@ -218,7 +266,9 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
                     "matched_sites": [
                         sname for sdom, sname in user_site_domains
                         if (sdom and sdom in (r[3] or "")) or sname == r[1]
-                    ]
+                    ],
+                    "also_published_by": _parse_fallback_also_published(r[12]) if len(r) > 12 else [],
+                    "also_published_by_count": int(r[13]) if len(r) > 13 and r[13] is not None else 0
                 }
                 for r in fallback_rows
             ]
@@ -263,7 +313,9 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
             s.matched_follows,
             s.image_url,
             s.image_status,
-            s.matched_sites
+            s.matched_sites,
+            s.also_published_by,
+            s.also_published_by_count
         FROM (
             SELECT
                 a.id, a.source_feed, a.title, a.original_url, a.author, a.published_at,
@@ -317,9 +369,42 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
                           a.source_feed = ws.site_name
                           OR POSITION(replace(replace(replace(ws.root_url, 'https://', ''), 'http://', ''), 'www.', '') IN a.original_url) > 0
                       )
-                ) AS matched_sites
+                ) AS matched_sites,
+                COALESCE(
+                    (
+                        SELECT jsonb_agg(
+                            jsonb_build_object(
+                                'id', d.id,
+                                'source', d.source_feed,
+                                'title', d.title,
+                                'url', d.original_url,
+                                'published_at', d.published_at
+                            ) ORDER BY d.published_at ASC
+                        )
+                        FROM (
+                            SELECT id, source_feed, title, original_url, published_at
+                            FROM (
+                                SELECT DISTINCT ON (source_feed) id, source_feed, title, original_url, published_at
+                                FROM articles
+                                WHERE duplicate_of = a.id
+                                  AND source_feed <> a.source_feed
+                                ORDER BY source_feed, published_at ASC
+                            ) distinct_outlets
+                            ORDER BY published_at ASC
+                            LIMIT 10
+                        ) d
+                    ),
+                    '[]'::jsonb
+                ) AS also_published_by,
+                (
+                    SELECT COUNT(DISTINCT x.source_feed)::int 
+                    FROM articles x 
+                    WHERE x.duplicate_of = a.id
+                      AND x.source_feed <> a.source_feed
+                ) AS also_published_by_count
             FROM articles a
             WHERE a.is_processed = TRUE
+              AND a.duplicate_of IS NULL
               AND a.macro_tag IS NOT NULL
               AND a.macro_tag != 'Off-Topic'
               AND (a.on_topic_score IS NULL OR a.on_topic_score >= 0.40)
@@ -355,6 +440,18 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
         })
         ranked_rows = cur.fetchall()
 
+        def _parse_ranked_also_published(val):
+            if val is None:
+                return []
+            if isinstance(val, list):
+                return val
+            if isinstance(val, str):
+                try:
+                    return json.loads(val)
+                except Exception:
+                    return []
+            return []
+
         items = [
             {
                 "id": str(r[0]), "source": r[1], "title": r[2], "url": r[3],
@@ -367,7 +464,9 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
                 "matched_follows": list(r[12] or []),
                 "image_url": r[13],
                 "image_status": r[14] or ("resolved" if r[13] else "gradient_fallback"),
-                "matched_sites": list(r[15] or [])
+                "matched_sites": list(r[15] or []),
+                "also_published_by": _parse_ranked_also_published(r[16]) if len(r) > 16 else [],
+                "also_published_by_count": int(r[17]) if len(r) > 17 and r[17] is not None else 0
             }
             for r in ranked_rows
         ]

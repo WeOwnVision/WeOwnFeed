@@ -232,8 +232,10 @@ def save_article_enrichment(art_id: str, macro: str, macro_tags: list, micro: li
                     executive_briefing = COALESCE(%s, executive_briefing),
                     clean_text = COALESCE(%s, clean_text),
                     is_processed = TRUE 
-                WHERE id = %s;
+                WHERE id = %s
+                RETURNING created_at;
             """, (macro, macro_tags, micro, tldr, conf, on_topic, embedding, briefing, briefing, art_id))
+            c_row = cur.fetchone()
         except Exception:
             cur.execute("""
                 UPDATE articles 
@@ -241,8 +243,20 @@ def save_article_enrichment(art_id: str, macro: str, macro_tags: list, micro: li
                     executive_briefing = COALESCE(%s, executive_briefing),
                     clean_text = COALESCE(%s, clean_text),
                     is_processed = TRUE 
-                WHERE id = %s;
+                WHERE id = %s
+                RETURNING created_at;
             """, (macro, micro, tldr, embedding, briefing, briefing, art_id))
+            c_row = cur.fetchone()
+
+        # Deduplication & story linking (duplicate_of) in the SAME atomic transaction
+        if embedding and macro and macro != "Off-Topic":
+            try:
+                from dedup import find_and_link_duplicate
+                from datetime import timezone
+                art_created = c_row[0] if c_row and c_row[0] else datetime.now(timezone.utc)
+                find_and_link_duplicate(cur, art_id, embedding, macro, art_created, reverse_adopt=True)
+            except Exception as de:
+                logger.debug("[Worker Dedup] Linking duplicate_of failed: %s", de)
 
     # Incremental Semantic Story Clustering (C2: auto-populate story_clusters on enrichment)
     if embedding and macro and macro != "Off-Topic":

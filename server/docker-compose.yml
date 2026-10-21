@@ -77,5 +77,17 @@ services:
       api:
         condition: service_healthy
 
+  image-sweeper:
+    <<: *server
+    command: ["python", "backfill_article_images.py", "--loop"]
+    restart: unless-stopped
+    environment:
+      IMAGE_SWEEPER_INTERVAL_SECONDS: ${IMAGE_SWEEPER_INTERVAL_SECONDS:-1800}
+      IMAGE_SWEEPER_DAYS: ${IMAGE_SWEEPER_DAYS:-7}
+      IMAGE_SWEEPER_BATCH_SIZE: ${IMAGE_SWEEPER_BATCH_SIZE:-25}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   pg_data:

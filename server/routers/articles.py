@@ -31,6 +31,9 @@ def ingest_articles(items: list[ScrapedArticleIn], x_secret: str = Header(...)):
                     pub_date = pub_date.replace(tzinfo=timezone.utc)
             except Exception:
                 pub_date = datetime.now(timezone.utc)
+            now_utc = datetime.now(timezone.utc)
+            if pub_date > now_utc:
+                pub_date = now_utc
 
             cleaned_content = clean_article_markdown(item.Baslik, item.TamMetin)
             
@@ -79,23 +82,107 @@ def get_articles(
         if macro:
             macro_clean = macro.strip()
             cur.execute("""
-                SELECT id, source_feed, title, original_url, author, published_at, macro_tag, macro_tags, micro_tags, tldr, image_url, image_status
-                FROM articles WHERE is_processed = TRUE 
-                  AND (macro_tag ILIKE %s OR EXISTS (
-                      SELECT 1 FROM unnest(macro_tags) m WHERE m ILIKE %s
+                SELECT 
+                    a.id, a.source_feed, a.title, a.original_url, a.author, a.published_at, 
+                    a.macro_tag, a.macro_tags, a.micro_tags, a.tldr, a.image_url, a.image_status,
+                    COALESCE(
+                        (
+                            SELECT jsonb_agg(
+                                jsonb_build_object(
+                                    'id', d.id,
+                                    'source', d.source_feed,
+                                    'title', d.title,
+                                    'url', d.original_url,
+                                    'published_at', d.published_at
+                                ) ORDER BY d.published_at ASC
+                            )
+                            FROM (
+                                SELECT id, source_feed, title, original_url, published_at
+                                FROM (
+                                    SELECT DISTINCT ON (source_feed) id, source_feed, title, original_url, published_at
+                                    FROM articles
+                                    WHERE duplicate_of = a.id
+                                      AND source_feed <> a.source_feed
+                                    ORDER BY source_feed, published_at ASC
+                                ) distinct_outlets
+                                ORDER BY published_at ASC
+                                LIMIT 10
+                            ) d
+                        ),
+                        '[]'::jsonb
+                    ) AS also_published_by,
+                    (
+                        SELECT COUNT(DISTINCT x.source_feed)::int 
+                        FROM articles x 
+                        WHERE x.duplicate_of = a.id
+                          AND x.source_feed <> a.source_feed
+                    ) AS also_published_by_count
+                FROM articles a 
+                WHERE a.is_processed = TRUE 
+                  AND a.duplicate_of IS NULL
+                  AND (a.macro_tag ILIKE %s OR EXISTS (
+                      SELECT 1 FROM unnest(a.macro_tags) m WHERE m ILIKE %s
                   ))
-                ORDER BY published_at DESC LIMIT %s OFFSET %s;
+                ORDER BY a.published_at DESC LIMIT %s OFFSET %s;
             """, (macro_clean, macro_clean, page_size, offset))
         else:
             cur.execute("""
-                SELECT id, source_feed, title, original_url, author, published_at, macro_tag, macro_tags, micro_tags, tldr, image_url, image_status
-                FROM articles 
-                WHERE is_processed = TRUE 
-                  AND macro_tag IS NOT NULL 
-                  AND macro_tag != 'Off-Topic'
-                ORDER BY published_at DESC LIMIT %s OFFSET %s;
+                SELECT 
+                    a.id, a.source_feed, a.title, a.original_url, a.author, a.published_at, 
+                    a.macro_tag, a.macro_tags, a.micro_tags, a.tldr, a.image_url, a.image_status,
+                    COALESCE(
+                        (
+                            SELECT jsonb_agg(
+                                jsonb_build_object(
+                                    'id', d.id,
+                                    'source', d.source_feed,
+                                    'title', d.title,
+                                    'url', d.original_url,
+                                    'published_at', d.published_at
+                                ) ORDER BY d.published_at ASC
+                            )
+                            FROM (
+                                SELECT id, source_feed, title, original_url, published_at
+                                FROM (
+                                    SELECT DISTINCT ON (source_feed) id, source_feed, title, original_url, published_at
+                                    FROM articles
+                                    WHERE duplicate_of = a.id
+                                      AND source_feed <> a.source_feed
+                                    ORDER BY source_feed, published_at ASC
+                                ) distinct_outlets
+                                ORDER BY published_at ASC
+                                LIMIT 10
+                            ) d
+                        ),
+                        '[]'::jsonb
+                    ) AS also_published_by,
+                    (
+                        SELECT COUNT(DISTINCT x.source_feed)::int 
+                        FROM articles x 
+                        WHERE x.duplicate_of = a.id
+                          AND x.source_feed <> a.source_feed
+                    ) AS also_published_by_count
+                FROM articles a 
+                WHERE a.is_processed = TRUE 
+                  AND a.duplicate_of IS NULL
+                  AND a.macro_tag IS NOT NULL 
+                  AND a.macro_tag != 'Off-Topic'
+                ORDER BY a.published_at DESC LIMIT %s OFFSET %s;
             """, (page_size, offset))
         rows = cur.fetchall()
+
+    def _parse_also_published(val):
+        if val is None:
+            return []
+        if isinstance(val, list):
+            return val
+        if isinstance(val, str):
+            try:
+                import json
+                return json.loads(val)
+            except Exception:
+                return []
+        return []
 
     return [
         {
@@ -104,7 +191,9 @@ def get_articles(
             "macro_tags": r[7] if r[7] else ([r[6]] if r[6] else []),
             "micro_tags": r[8], "tldr": r[9],
             "image_url": r[10],
-            "image_status": r[11] or ("resolved" if r[10] else "gradient_fallback")
+            "image_status": r[11] or ("resolved" if r[10] else "gradient_fallback"),
+            "also_published_by": _parse_also_published(r[12]) if len(r) > 12 else [],
+            "also_published_by_count": int(r[13]) if len(r) > 13 and r[13] is not None else 0
         }
         for r in rows
     ]

@@ -113,6 +113,17 @@ ALTER TABLE tavily_calls ADD COLUMN IF NOT EXISTS detail TEXT;
 ALTER TABLE watched_sites ADD COLUMN IF NOT EXISTS status VARCHAR(20) DEFAULT 'pending';
 ALTER TABLE watched_sites ADD COLUMN IF NOT EXISTS article_count INT DEFAULT 0;
 ALTER TABLE watched_sites ADD COLUMN IF NOT EXISTS last_checked_at TIMESTAMP WITH TIME ZONE;
+
+-- 8. Deduplicated Story Cards (duplicate_of self-referencing foreign key)
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS duplicate_of UUID REFERENCES articles(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_articles_duplicate_of ON articles (duplicate_of);
+CREATE INDEX IF NOT EXISTS idx_articles_feed_primary ON articles (published_at DESC) WHERE duplicate_of IS NULL;
+
+-- 9. Image Sweeper & Autonomous Photo Healing
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_attempts INT DEFAULT 0;
+ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_last_attempt_at TIMESTAMP WITH TIME ZONE;
+CREATE INDEX IF NOT EXISTS idx_articles_image_healing ON articles (published_at DESC, created_at DESC) 
+WHERE (image_status = 'gradient_fallback' OR image_url IS NULL) AND image_attempts < 3;
 """
 
 def sanitize_and_prewarm_db() -> None:

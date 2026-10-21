@@ -906,6 +906,7 @@ def get_daily_digest(user_id: Optional[str] = Query(None), macro: Optional[str] 
                 SELECT id, title, source_feed, original_url, embedding, macro_tag
                 FROM articles
                 WHERE is_processed = TRUE 
+                  AND duplicate_of IS NULL
                   AND macro_tag = %s
                   AND (on_topic_score IS NULL OR on_topic_score >= 0.40)
                   AND embedding IS NOT NULL
@@ -950,6 +951,7 @@ def get_daily_digest(user_id: Optional[str] = Query(None), macro: Optional[str] 
                 SELECT id, title, source_feed, original_url, embedding, macro_tag
                 FROM articles
                 WHERE is_processed = TRUE 
+                  AND duplicate_of IS NULL
                   AND macro_tag IS NOT NULL
                   AND macro_tag != 'Off-Topic'
                   AND (on_topic_score IS NULL OR on_topic_score >= 0.40)

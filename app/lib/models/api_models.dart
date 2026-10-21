@@ -32,6 +32,8 @@ class Article {
     this.imageUrl,
     this.imageStatus,
     this.factCheckCache,
+    this.alsoPublishedBy = const [],
+    this.alsoPublishedByCount = 0,
   });
 
   factory Article.fromJson(Map<String, dynamic> json) {
@@ -65,6 +67,18 @@ class Article {
                     Map<String, dynamic>.from(json['fact_check_cache'] as Map),
                   )
                 : null),
+      alsoPublishedBy: json['also_published_by'] is List
+          ? (json['also_published_by'] as List)
+              .whereType<Map<String, dynamic>>()
+              .map(AlsoPublishedBy.fromJson)
+              .toList()
+          : (json['also_published_by'] is List
+              ? (json['also_published_by'] as List)
+                  .whereType<Map>()
+                  .map((m) => AlsoPublishedBy.fromJson(Map<String, dynamic>.from(m)))
+                  .toList()
+              : const <AlsoPublishedBy>[]),
+      alsoPublishedByCount: (json['also_published_by_count'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -103,6 +117,12 @@ class Article {
   /// Cache of the Tavily & Nemotron deep verification / fact check.
   final FactCheckResult? factCheckCache;
 
+  /// Sibling duplicate articles covering the same breaking story.
+  final List<AlsoPublishedBy> alsoPublishedBy;
+
+  /// Total count of distinct duplicate outlets.
+  final int alsoPublishedByCount;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'source': source,
@@ -121,6 +141,45 @@ class Article {
     if (matchedSites.isNotEmpty) 'matched_sites': matchedSites,
     if (imageUrl != null) 'image_url': imageUrl,
     if (imageStatus != null) 'image_status': imageStatus,
+    if (alsoPublishedBy.isNotEmpty)
+      'also_published_by': alsoPublishedBy.map((e) => e.toJson()).toList(),
+    if (alsoPublishedByCount > 0)
+      'also_published_by_count': alsoPublishedByCount,
+  };
+}
+
+/// Sibling coverage item representing an alternative outlet that published on the same event.
+class AlsoPublishedBy {
+  const AlsoPublishedBy({
+    required this.id,
+    required this.source,
+    required this.title,
+    required this.url,
+    this.publishedAt,
+  });
+
+  factory AlsoPublishedBy.fromJson(Map<String, dynamic> json) => AlsoPublishedBy(
+    id: (json['id'] as String?) ?? '',
+    source:
+        (json['source'] as String?) ?? (json['source_feed'] as String?) ?? '',
+    title: (json['title'] as String?) ?? '',
+    url:
+        (json['url'] as String?) ?? (json['original_url'] as String?) ?? '',
+    publishedAt: _date(json['published_at']),
+  );
+
+  final String id;
+  final String source;
+  final String title;
+  final String url;
+  final DateTime? publishedAt;
+
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'source': source,
+    'title': title,
+    'url': url,
+    if (publishedAt != null) 'published_at': publishedAt!.toIso8601String(),
   };
 }
 

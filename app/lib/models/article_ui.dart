@@ -51,6 +51,51 @@ extension ArticleUi on Article {
     return (words / 220).ceil().clamp(1, 99);
   }
 
+  /// Whether other outlets covered this same story.
+  bool get hasAlsoPublished => alsoPublishedByCount > 0 && alsoPublishedBy.isNotEmpty;
+
+  /// Single standardized line: "Also published by IGN, Kotaku and 5 more".
+  String get alsoPublishedLine {
+    if (alsoPublishedByCount <= 0 || alsoPublishedBy.isEmpty) return '';
+    final outlets = <String>[];
+    for (final item in alsoPublishedBy) {
+      final s = item.source.trim();
+      if (s.isNotEmpty && s != source && !outlets.contains(s)) {
+        outlets.add(s);
+      }
+    }
+    if (outlets.isEmpty) return '';
+    if (outlets.length == 1) {
+      return 'Also published by ${outlets[0]}';
+    }
+    if (outlets.length == 2 && alsoPublishedByCount <= 2) {
+      return 'Also published by ${outlets[0]} and ${outlets[1]}';
+    }
+    final remaining = alsoPublishedByCount - 2;
+    if (remaining > 0) {
+      return 'Also published by ${outlets[0]}, ${outlets[1]} and $remaining more';
+    }
+    return 'Also published by ${outlets[0]} and ${outlets[1]}';
+  }
+
+  /// Relative offset compared to the primary article (+12m, +1h, 15m earlier).
+  String formatSiblingOffset(DateTime? siblingDate) {
+    if (siblingDate == null || publishedAt == null) return '';
+    final diff = siblingDate.difference(publishedAt!);
+    if (diff.isNegative) {
+      final m = diff.inMinutes.abs();
+      if (m < 60) return '${m}m earlier';
+      final h = diff.inHours.abs();
+      if (h < 24) return '${h}h earlier';
+      return '${diff.inDays.abs()}d earlier';
+    }
+    final m = diff.inMinutes;
+    if (m < 60) return '+${m}m';
+    final h = diff.inHours;
+    if (h < 24) return '+${h}h';
+    return '+${diff.inDays}d';
+  }
+
   /// The resolved real image; otherwise a placeholder for the category.
   String get image {
     final netImg = imageUrl?.trim();
