@@ -1,0 +1,27 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "framework": null,
+  "installCommand": "if [ ! -x flutter/bin/flutter ]; then git clone https://github.com/flutter/flutter.git --depth 1 --branch 3.35.3 flutter; fi && flutter/bin/flutter config --no-analytics && flutter/bin/flutter pub get",
+  "buildCommand": "flutter/bin/flutter build web --release --dart-define=API_BASE_URL=$API_BASE_URL",
+  "outputDirectory": "build/web",
+  "headers": [
+    {
+      "source": "/",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    },
+    {
+      "source": "/(index.html|flutter_bootstrap.js|flutter_service_worker.js|version.json)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "no-cache"
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,8 @@
+WeOwnFeed (WOF)
+Copyright 2026 WeOwnVision and the WeOwnFeed contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Bundled third-party assets keep their own licenses:
+  app/assets/google_fonts/  Inter, Playfair Display, Source Serif 4
+                            SIL Open Font License 1.1 (see the *-OFL.txt files)

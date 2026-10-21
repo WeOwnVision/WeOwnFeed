@@ -1,0 +1,135 @@
+{
+  "version": 1,
+  "_about": "Demand-driven Tavily query templates. A query only runs while at least one user follows its category or subtopic (users.preferred_macro_tags / preferred_micro_tags). Every subtopic served by GET /api/taxonomy must have a template here (tests/test_query_scheduler.py enforces it).",
+  "_query_style": "Short, plain topic terms. Recency and 'news' are set by the search parameters (topic=news, time_range), not by words in the query. A/B tested 2026-10-18: adding 'latest news and developments in ...' lowered relevance and pulled site home pages; topic=finance returned stock-quote and event pages without publish dates; the word 'developments' pulled job listings. Second A/B (same day): 'AI research' pulled 'Lam Research' stock and survey pages -> 'new AI models'; category 'artificial intelligence' pulled local municipal news -> 'generative AI'.",
+  "search": {
+    "topic": "news",
+    "max_results": 20,
+    "search_depth": "basic",
+    "filter_by_published_date": true
+  },
+  "cadence": {
+    "category": {"interval_hours": 6, "time_range": "day"},
+    "core": {"interval_hours": 24, "time_range": "day"},
+    "specific": {"interval_hours": 48, "time_range": "week"},
+    "follow": {"interval_hours": 48, "time_range": "week"}
+  },
+  "backoff": {
+    "_about": "A query whose run stores fewer than low_yield_inserted new articles low_yield_runs times in a row doubles its interval, up to max_interval_hours. A productive run resets it to the base cadence.",
+    "low_yield_inserted": 2,
+    "low_yield_runs": 2,
+    "max_interval_hours": 168
+  },
+  "seed": {"time_range": "week"},
+  "follow_template": "{name} {category_term}",
+  "categories": {
+    "Tech": {
+      "query": "technology",
+      "category_term": "tech",
+      "subtopics": {
+        "software": {"query": "software", "kind": "core"},
+        "startups": {"query": "tech startups", "kind": "core"},
+        "security": {"query": "cybersecurity", "kind": "core"},
+        "internet": {"query": "social media platforms", "kind": "core"},
+        "policy": {"query": "tech regulation", "kind": "core"},
+        "post_quantum": {"query": "post-quantum cryptography", "kind": "specific"},
+        "cryptography": {"query": "cryptography", "kind": "specific"},
+        "nist_standards": {"query": "NIST standards", "kind": "specific"},
+        "runtime": {"query": "programming runtime", "kind": "specific", "review": "generic keyword tag; likely from test data"}
+      }
+    },
+    "AI": {
+      "query": "generative AI",
+      "category_term": "AI",
+      "subtopics": {
+        "llm_agents": {"query": "AI agents and large language models", "kind": "core"},
+        "models_research": {"query": "new AI models", "kind": "core"},
+        "ai_chips": {"query": "AI chips", "kind": "core"},
+        "ai_ethics": {"query": "AI safety", "kind": "core"},
+        "ai_tools": {"query": "generative AI tools", "kind": "core"},
+        "autonomous_agents": {"query": "autonomous AI agents", "kind": "specific"},
+        "anthropic": {"query": "Anthropic", "kind": "specific"},
+        "inference_optimization": {"query": "LLM inference", "kind": "specific"},
+        "benchmarks": {"query": "AI benchmarks", "kind": "specific", "review": "generic keyword tag; likely from test data"},
+        "nvidia": {"query": "NVIDIA", "kind": "specific"}
+      }
+    },
+    "Hardware": {
+      "query": "computer hardware",
+      "category_term": "chips",
+      "subtopics": {
+        "semiconductors": {"query": "semiconductors", "kind": "core"},
+        "consumer_electronics": {"query": "consumer electronics", "kind": "core"},
+        "gpus": {"query": "graphics cards", "kind": "core"},
+        "storage_memory": {"query": "memory chips and SSDs", "kind": "core"},
+        "2nm": {"query": "2nm chips", "kind": "specific"},
+        "3nm": {"query": "3nm chips", "kind": "specific"},
+        "gaafet": {"query": "GAAFET", "kind": "specific"},
+        "nanosheet": {"query": "nanosheet transistors", "kind": "specific"},
+        "tsmc": {"query": "TSMC", "kind": "specific"},
+        "transistors": {"query": "transistors", "kind": "specific", "review": "overlaps gaafet/nanosheet; likely from test data"},
+        "foundry": {"query": "chip foundry", "kind": "specific"},
+        "silicon_wafers": {"query": "silicon wafers", "kind": "specific"}
+      }
+    },
+    "Automotive": {
+      "query": "automotive",
+      "category_term": "cars",
+      "subtopics": {
+        "ev_charging": {"query": "EV charging", "kind": "core"},
+        "autonomous": {"query": "self-driving cars", "kind": "core"},
+        "industry": {"query": "automakers", "kind": "core"},
+        "reviews": {"query": "car reviews", "kind": "core"},
+        "solid_state_battery": {"query": "solid-state batteries", "kind": "specific"},
+        "quantumscape": {"query": "QuantumScape", "kind": "specific"},
+        "porsche": {"query": "Porsche", "kind": "specific"},
+        "endurance_testing": {"query": "EV endurance testing", "kind": "specific", "review": "unusual subtopic; likely from test data"},
+        "electric_vehicles": {"query": "electric vehicles", "kind": "specific", "review": "duplicates the category itself"}
+      }
+    },
+    "Gaming": {
+      "query": "video games",
+      "category_term": "gaming",
+      "subtopics": {
+        "releases": {"query": "video game releases", "kind": "core"},
+        "industry_esports": {"query": "game studios and esports", "kind": "core"},
+        "hardware_consoles": {"query": "game consoles", "kind": "core"},
+        "pc_gaming": {"query": "PC gaming", "kind": "core"},
+        "steam_deck": {"query": "Steam Deck", "kind": "specific"},
+        "oled": {"query": "OLED gaming", "kind": "specific", "review": "component-level tag; likely from test data"},
+        "handheld": {"query": "handheld gaming PC", "kind": "specific"},
+        "apu": {"query": "console APU", "kind": "specific", "review": "component-level tag; likely from test data"},
+        "variable_refresh_rate": {"query": "variable refresh rate", "kind": "specific", "review": "component-level tag; likely from test data"},
+        "steamos": {"query": "SteamOS", "kind": "specific"}
+      }
+    },
+    "Finance": {
+      "query": "financial markets",
+      "category_term": "finance",
+      "subtopics": {
+        "crypto": {"query": "cryptocurrency", "kind": "core"},
+        "markets": {"query": "stock market", "kind": "core"},
+        "macro": {"query": "interest rates and inflation", "kind": "core"},
+        "fintech": {"query": "fintech", "kind": "core"},
+        "digital_euro": {"query": "digital euro", "kind": "specific"},
+        "ecb": {"query": "European Central Bank", "kind": "specific"},
+        "settlement": {"query": "payment settlement", "kind": "specific", "review": "generic keyword tag; likely from test data"},
+        "interbank": {"query": "interbank payments", "kind": "specific", "review": "generic keyword tag; likely from test data"}
+      }
+    },
+    "Science": {
+      "query": "science",
+      "category_term": "science",
+      "subtopics": {
+        "space": {"query": "space exploration", "kind": "core"},
+        "energy": {"query": "clean energy", "kind": "core"},
+        "biotech": {"query": "biotech", "kind": "core"},
+        "physics": {"query": "physics research", "kind": "core"},
+        "jwst": {"query": "James Webb Space Telescope", "kind": "specific"},
+        "exoplanet": {"query": "exoplanets", "kind": "specific"},
+        "biosignatures": {"query": "biosignatures", "kind": "specific"},
+        "k2_18b": {"query": "K2-18b", "kind": "specific", "review": "single-planet tag; likely from test data"}
+      }
+    }
+  }
+}

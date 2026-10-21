@@ -1,0 +1,81 @@
+# WeOwnFeed (WOF) full stack: PostgreSQL + pgvector, API, enrichment worker,
+# demand-driven Tavily ingestion. Settings come from .env (copy .env.example).
+#
+#   docker compose up -d --build                 # database, api, worker, ingest
+#   docker compose --profile watcher up -d       # + RSS-less site watcher
+#   docker compose up -d postgres                # database only (run Python locally)
+#
+# API: http://localhost:8000  (Swagger: http://localhost:8000/docs)
+# Deploying to a cloud server: docs/deployment.md
+name: weownfeed
+
+x-server: &server
+  build: .
+  image: weownfeed-server
+  restart: unless-stopped
+  env_file: .env
+  environment:
+    DATABASE_URL: postgresql://${POSTGRES_USER:-wof}:${POSTGRES_PASSWORD:-change_me}@postgres:5432/${POSTGRES_DB:-weownfeed}
+    API_INGEST_URL: http://api:8000/api/internal/ingest
+  depends_on:
+    postgres:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-wof}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change_me}
+      POSTGRES_DB: ${POSTGRES_DB:-weownfeed}
+    # Reachable only from this machine; never expose the database publicly.
+    ports:
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+      # Creates the base tables on the first start of an empty volume.
+      - ./schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  api:
+    <<: *server
+    # Localhost only: in production a reverse proxy (e.g. Caddy) serves HTTPS
+    # in front of it (docs/deployment.md).
+    ports:
+      - "127.0.0.1:8000:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/openapi.json', timeout=5)"]
+      interval: 10s
+      timeout: 6s
+      retries: 12
+      start_period: 15s
+
+  worker:
+    <<: *server
+    command: ["python", "worker.py"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  ingest:
+    <<: *server
+    command: ["python", "ingest_tavily.py", "--loop"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+  watcher:
+    <<: *server
+    profiles: ["watcher"]
+    command: ["python", "site_watcher.py", "--loop"]
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pg_data:

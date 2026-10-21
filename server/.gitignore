@@ -1,0 +1,13 @@
+# Server-only ignores (common rules are in the root .gitignore).
+
+# PostgreSQL data when not using the docker volume
+pgdata/
+
+# Ingestion state and test output
+.ingest_state.json
+copilot_test_results.txt
+
+# Personal launch scripts (not part of the repo)
+share_api_tunnel.ps1
+start_backend.ps1
+stop_backend.ps1

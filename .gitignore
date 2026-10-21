@@ -1,0 +1,30 @@
+# Common ignores for the whole WeOwnFeed repo.
+# Package-specific rules live next to the code: server/.gitignore, app/.gitignore.
+
+# Secrets: every .env except the committed examples
+.env
+.env.*
+*.env
+!.env.example
+
+# Local development data (database files, logs)
+local_dev/
+logs/
+*.log
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db

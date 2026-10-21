@@ -1,0 +1,176 @@
+WeOwnFeed (WOF) - Model Orchestration
+=====================================
+
+All model orchestration lives inside the backend server (server/). This file is
+a map of which model runs where, in what order, and with which fallback.
+Every model is called through one OpenAI-compatible client (server/ai.py)
+pointed at Nebius Token Factory (AI_BASE_URL). Model names come from server/.env.
+
+
+1. MODELS
+---------
+
+  Role               Env variable       Default model                              Used by
+  -----------------  -----------------  -----------------------------------------  ------------------------------
+  Summary            SUMMARY_MODEL      nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B      worker (no thinking)
+  Labels             TAG_MODEL          nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B      worker (thinking + JSON schema)
+  Fast / gate        FAST_MODEL         Qwen/Qwen3-30B-A3B-Instruct-2507           topic gate, claim queries,
+                                                                                   translation, every fallback
+  Reasoning          REASONING_MODEL    nvidia/nemotron-3-super-120b-a12b          article chat, synthesis,
+                                                                                   daily digest
+  Assistant          WAI_MODEL          deepseek-ai/DeepSeek-V4-Flash-0731         WAI chat (no thinking)
+  Home card          LATEST_MODEL       deepseek-ai/DeepSeek-V4-Flash-0731         "Latest developments" card
+  Embeddings         EMBEDDING_MODEL    Qwen/Qwen3-Embedding-8B (1024 dims)        worker, search, profiles
+
+  Optional local fallbacks (off by default):
+    ENRICHMENT_ENGINE=hybrid  -> Laya SLM triage on this machine + FAST_MODEL   (server/classifier.py)
+    EMBEDDING_BACKEND=local   -> sentence-transformers/all-MiniLM-L6-v2, 384d  (server/embedder.py)
+
+
+2. INGESTION: HOW A STORY ENTERS THE SYSTEM (runs in the background)
+--------------------------------------------------------------------
+
+  users' followed categories / subtopics / "+" follows
+          |
+          v
+  query_scheduler.py      demand-driven: only queries someone follows are run;
+                          own cadence per kind (category 6h, core 24h, specific 48h),
+                          low-yield backoff, stops at TAVILY_CREDIT_RESERVE,
+                          rotates TAVILY_API_KEYS when a key runs out
+          |
+          v
+  ingest_tavily.py        Tavily Search (topic=news)  --short body-->  Tavily Extract
+  site_watcher.py         Tavily Map (URL diff vs. DB) --> Tavily Crawl / Extract
+  (site follow)           "RSS-less RSS": new posts of sites without a feed
+          |
+          v
+  content_cleaner.py      junk page filter, menu / widget / paywall stripping,
+                          shingle de-duplication, date validation      (no model)
+          |
+          v
+  POST /api/internal/ingest  (X-Secret = INGESTION_SECRET)  -> articles table,
+                                                               is_processed = FALSE
+
+
+3. ENRICHMENT: worker.py  (ENRICHMENT_ENGINE=nano, NANO_CONCURRENCY=4 in parallel)
+-----------------------------------------------------------------------------------
+
+  unprocessed article (FOR UPDATE SKIP LOCKED, max 3 retries)
+          |
+          v
+  strip_site_chrome()                                              (no model)
+          |
+          v
+  [1] SUMMARY        SUMMARY_MODEL   2 sentences, <= 45 words
+          |              '-- too long? --> FAST_MODEL shortens it once
+          v
+  [2] TOPIC GATE     FAST_MODEL      {"on_topic": true|false} on title + summary
+          |              '-- false --> saved as "Off-Topic", stops here
+          |              '-- model error --> article is kept (losing news is worse)
+          v
+  [3] LABELS         TAG_MODEL       thinking + JSON schema limited to the taxonomy
+          |                          (7 categories, 66 subtopics), 2 attempts
+          v
+  [4] BRIEFING       SUMMARY_MODEL   "Key Takeaways" + "Context & Significance"
+          |              '-- error --> summary is used as the briefing
+          v
+  [5] EMBEDDING      EMBEDDING_MODEL vector of "title. summary"
+          |
+          v
+  [6] STORY CLUSTER  pgvector cosine search for the same story (no model),
+                     assign_origins() counts independent origins
+                     (wire copies of Reuters/AP/... count as one)
+
+  If step 1 or 3 fails: one FAST_MODEL call writes category, subtopics and summary.
+
+
+4. REQUEST TIME: WHAT RUNS WHEN THE APP ASKS
+--------------------------------------------
+
+  Personalized feed       GET  /api/feed/personalized
+      no LLM. Score = categories + subtopics + follows (embedding match)
+      + context sentence + interest vector learned from likes / dislikes (EMA).
+
+  Saving preferences      PUT  /api/users/{id}/preferences
+      FAST_MODEL  translates the "why I read news" sentence to English
+      EMBEDDING   embed_query(interest text)  -> user interest vector
+      then fetches news for the new topics right away if there are few.
+
+  Search                  GET  /api/search
+      EMBEDDING   embed_query(q) with the retrieval instruction prefix
+      -> Reciprocal Rank Fusion of vector + full-text + tag matches (PostgreSQL)
+      -> optional live_web=true adds a Tavily Search horizon.
+
+  Latest developments     GET  /api/users/{id}/latest-developments
+      top 8 stories of the user's feed -> LATEST_MODEL writes headline + paragraph
+      from their summaries; cached per user, refreshed in the background
+      (60 min) or at once when topics change.     fallback: FAST_MODEL
+
+  WAI assistant           POST /api/wai/open, /api/wai/chat  (SSE stream)
+      scope = story | latest | area; the server picks the material, the model
+      answers in one call per message (no tool loop).
+      WAI_MODEL --error--> FAST_MODEL
+
+  Article chat / ask      POST /api/articles/{id}/chat   REASONING_MODEL (stream)
+                          POST /api/articles/{id}/ask    FAST_MODEL, grounded in
+                                                         article text + receipts
+
+  Multi-source synthesis  POST /api/intelligence/synthesize
+  Daily digest            GET  /api/intelligence/daily-digest
+      FAST_MODEL       6-10 word neutral claim query from 1-2 stories
+      Tavily Search    web_verify() (own URLs excluded)
+      EVIDENCE CARD    see section 5
+      REASONING_MODEL  writes the report (stream); structured fallback on error
+
+
+5. EVIDENCE CARD ("receipts"): evidence_verifier.py
+---------------------------------------------------
+
+  story cluster
+       |
+       v
+  assign_origins()   independent origins + < 6h fresh-story check     (no model)
+       |
+       v
+  FAST_MODEL         extract 2-3 atomic, verifiable claims
+       |
+       v   for each claim, in parallel:
+  Tavily Search  support        neutral wording
+  Tavily Search  contradiction  "denied / false" probe
+  Tavily Search  official       include_domains = the named entity's own site
+       |
+       v
+  pick 5 URLs (1 official + 2 support + 2 contradiction) -> Tavily Extract
+       |
+       v
+  span_is_grounded()   a quote must appear verbatim in the extracted text,
+                       otherwise it is dropped (no invented quotes)
+       |
+       v
+  rule-based verdict per claim (no model), checked in this order:
+       contradicted   contradiction and no independent support
+       supported      official source confirms it, no contradiction
+       supported      >= 2 independent support origins, no contradiction
+       disputed       contradiction + some support or official source
+       unverified_yet fresh (< 6h) single-origin story; never marked "false"
+       unverified     anything else
+       |
+       v
+  cached in PostgreSQL per cluster, shared by every user
+
+  On request only ("deep inspect" button):
+       Tavily Research   POST /api/articles/{id}/deep-inspect/research
+                         multi-search report with sources; costly, never automatic
+
+
+6. TAVILY ENDPOINTS AT A GLANCE
+-------------------------------
+
+  Search    ingestion, live search horizon, claim verification (3 angles)
+  Extract   short / paywalled bodies at ingestion, evidence pages
+  Map       site follow and newsroom watcher (URL diff)
+  Crawl     new posts of followed sites
+  Research  on-demand deep inspection
+
+  Every call is logged to the tavily_calls table (endpoint, purpose, credits,
+  latency, cache hit): GET /api/tavily/stats and GET /api/tavily/calls.

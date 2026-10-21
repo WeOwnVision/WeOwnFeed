@@ -1,0 +1,520 @@
+import os
+import time
+import json
+import logging
+import threading
+from concurrent.futures import ThreadPoolExecutor
+from db import get_db
+from ai import ai_client, FAST_MODEL
+from schemas import ArticleEnrichmentOut, ArticleTldrOut
+from classifier import LayaClassifier
+from embedder import embedding_dim, get_embedder, similarity_thresholds
+from content_cleaner import clean_markdown_article
+import llm_enrichment
+from llm_enrichment import SYSTEM_PROMPT_TOPIC_CHECK
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
+logger = logging.getLogger("worker")
+# One line per Nebius call is noise next to the per-article log lines.
+logging.getLogger("httpx").setLevel(logging.WARNING)
+
+# "nano" (default): Nebius models only, see llm_enrichment.py.
+# "hybrid": local Laya triage + FAST_MODEL (the original pipeline).
+ENRICHMENT_ENGINE = os.getenv("ENRICHMENT_ENGINE", "nano").lower()
+
+# nano mode waits on the network, not the CPU: articles of a batch run in parallel.
+NANO_CONCURRENCY = max(1, int(os.getenv("NANO_CONCURRENCY", "4")))
+BATCH_SIZE = 2 * NANO_CONCURRENCY if ENRICHMENT_ENGINE == "nano" else 5
+
+# On-topic score stored by nano mode (the feed keeps articles with on_topic_score >= 0.40).
+NANO_ON_TOPIC_SCORE = 1.0
+NANO_OFF_TOPIC_SCORE = 0.0
+
+SYSTEM_PROMPT_FULL = """
+You are an RSS news tagging and summarization engine. 
+Analyze the input text and extract metadata.
+You must respond with valid JSON matching this schema:
+{
+  "macro_tag": "One of: Tech, AI, Hardware, Automotive, Gaming, Finance, Science",
+  "micro_tags": ["lowercase_tag1", "tag2", "tag3"],
+  "tldr": "A 2-sentence empirical summary of the news."
+}
+"""
+
+SYSTEM_PROMPT_TLDR = """
+You are an RSS news summarization engine. 
+The article topic has already been classified. Provide a strictly grounded 2-sentence empirical summary of the news.
+You must respond with valid JSON matching this schema:
+{
+  "tldr": "A 2-sentence empirical summary of the news."
+}
+"""
+
+# On-topic score stored for an article Laya rejected but the LLM second opinion
+# kept, so it passes the feed/digest filter (on_topic_score >= 0.40).
+RESCUED_ON_TOPIC_SCORE = 0.5
+
+
+def confirm_on_topic(title: str, text: str) -> bool:
+    """
+    LLM second opinion for articles Laya marked Off-Topic. True keeps the
+    article. Measured 2026-10-18: rescued 11 of 13 Laya rejections (AI company
+    earnings/IPO, fintech stock moves) and kept 2 real non-news pages out.
+    Any failure keeps Laya's verdict (returns False).
+    """
+    try:
+        resp = ai_client.chat.completions.create(
+            model=FAST_MODEL,
+            temperature=0.0,
+            max_tokens=60,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_TOPIC_CHECK},
+                {"role": "user", "content": f"Title: {title}\n\n{(text or '')[:1500]}"}
+            ],
+            timeout=30.0
+        )
+        return bool(clean_and_parse_json(resp.choices[0].message.content).get("on_topic"))
+    except Exception as e:
+        logger.warning("[Topic Check] Second opinion failed (%s); keeping Laya's off-topic verdict.", e)
+        return False
+
+
+# Lazy-loaded classifier instance
+_classifier = None
+
+def get_classifier():
+    global _classifier
+    if _classifier is None and ENRICHMENT_ENGINE == "hybrid":
+        _classifier = LayaClassifier()
+    return _classifier
+
+def init_db_schema():
+    """Ensure optional observability, error tracking, and vector columns exist in the articles table."""
+    try:
+        with get_db() as cur:
+            cur.execute(f"""
+                ALTER TABLE articles
+                ADD COLUMN IF NOT EXISTS confidence_score FLOAT,
+                ADD COLUMN IF NOT EXISTS on_topic_score FLOAT,
+                ADD COLUMN IF NOT EXISTS macro_tags TEXT[],
+                ADD COLUMN IF NOT EXISTS embedding vector({embedding_dim()}),
+                ADD COLUMN IF NOT EXISTS error_message TEXT,
+                ADD COLUMN IF NOT EXISTS retry_count INT DEFAULT 0,
+                ADD COLUMN IF NOT EXISTS raw_scraped_text TEXT,
+                ADD COLUMN IF NOT EXISTS executive_briefing TEXT;
+                UPDATE articles SET raw_scraped_text = clean_text WHERE raw_scraped_text IS NULL;
+                CREATE INDEX IF NOT EXISTS idx_articles_macro_tags ON articles USING GIN (macro_tags);
+                CREATE INDEX IF NOT EXISTS idx_articles_embedding ON articles USING hnsw (embedding vector_cosine_ops);
+            """)
+        logger.info("Database schema columns verified (confidence_score, on_topic_score, macro_tags, embedding, raw_scraped_text, executive_briefing).")
+    except Exception as e:
+        logger.warning("Could not verify DB columns: %s", e)
+
+def clean_and_parse_json(content: str) -> dict:
+    """Robust JSON extraction that strips markdown code fences and whitespace."""
+    text = (content or "").strip()
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0].strip()
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0].strip()
+    
+    # Locate outer brackets
+    s = text.find("{")
+    e = text.rfind("}")
+    if s != -1 and e != -1 and e > s:
+        text = text[s:e+1]
+    return json.loads(text)
+
+def generate_tldr_only(title: str, text: str, macro_tag: str, micro_tags: list) -> str:
+    """Fast targeted LLM call that only generates the 2-sentence TL;DR summary."""
+    truncated = text[:3500]
+    prompt = f"Category: {macro_tag} ({', '.join(micro_tags)})\nTitle: {title}\n\nContent:\n{truncated}"
+    
+    # 1. Fast direct prompt (5-8x faster on local LM Studio without GBNF grammar lag)
+    try:
+        resp = ai_client.chat.completions.create(
+            model=FAST_MODEL,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_TLDR},
+                {"role": "user", "content": prompt}
+            ],
+            timeout=50.0
+        )
+        data = clean_and_parse_json(resp.choices[0].message.content)
+        tldr = data.get("tldr", "").strip()
+        if tldr:
+            return tldr
+    except Exception as e:
+        logger.warning("[TLDR Fast Call Retry] %s. Falling back to structured schema...", e)
+
+    # 2. Structured json_schema fallback
+    try:
+        resp = ai_client.chat.completions.create(
+            model=FAST_MODEL,
+            temperature=0.0,
+            response_format={
+                "type": "json_schema", 
+                "json_schema": {"name": "tldr_only", "schema": ArticleTldrOut.model_json_schema()}
+            },
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_TLDR},
+                {"role": "user", "content": prompt}
+            ],
+            timeout=50.0
+        )
+        data = clean_and_parse_json(resp.choices[0].message.content)
+        return data.get("tldr", "").strip()
+    except Exception as fe:
+        logger.error("[TLDR Error] Failed to generate summary: %s", fe)
+        # Safe fallback summary from content rather than dropping the article
+        first_sentence = text.strip().split(".")[0] if text else title
+        return f"{title}. {first_sentence}."
+
+def generate_full_enrichment(title: str, text: str, hint: str = "") -> tuple[str, list, str]:
+    """Fallback LLM call that extracts macro_tag, micro_tags, and tldr in a single prompt."""
+    truncated = text[:3500]
+    prompt = f"{hint}Title: {title}\n\nContent:\n{truncated}".strip()
+    
+    try:
+        resp = ai_client.chat.completions.create(
+            model=FAST_MODEL,
+            temperature=0.0,
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_FULL},
+                {"role": "user", "content": prompt}
+            ],
+            timeout=50.0
+        )
+        raw = clean_and_parse_json(resp.choices[0].message.content)
+    except Exception:
+        resp = ai_client.chat.completions.create(
+            model=FAST_MODEL,
+            temperature=0.0,
+            response_format={
+                "type": "json_schema", 
+                "json_schema": {"name": "enrichment", "schema": ArticleEnrichmentOut.model_json_schema()}
+            },
+            messages=[
+                {"role": "system", "content": SYSTEM_PROMPT_FULL},
+                {"role": "user", "content": prompt}
+            ],
+            timeout=50.0
+        )
+        raw = clean_and_parse_json(resp.choices[0].message.content)
+
+    parsed = ArticleEnrichmentOut(**raw)
+    from taxonomy import clean_micro_tags
+    clean_micro = clean_micro_tags(parsed.micro_tags, max_tags=6)
+    return parsed.macro_tag, clean_micro, parsed.tldr
+
+# The local embedding model is shared by the parallel nano-mode threads.
+_embed_lock = threading.Lock()
+
+
+def save_article_enrichment(art_id: str, macro: str, macro_tags: list, micro: list, tldr: str, title: str = "", conf: float = None, on_topic: float = None, briefing: str = None):
+    """Saves enriched article to DB, generating and storing dense vector embeddings and briefing."""
+    embedding = None
+    if title or tldr:
+        try:
+            embedder = get_embedder()
+            with _embed_lock:
+                embedding = embedder.embed_text(f"{title}. {tldr}")
+        except Exception as ee:
+            logger.warning("Could not generate embedding for article %s: %s", art_id, ee)
+
+    with get_db() as cur:
+        try:
+            cur.execute("""
+                UPDATE articles 
+                SET macro_tag = %s, macro_tags = %s, micro_tags = %s, tldr = %s, 
+                    confidence_score = %s, on_topic_score = %s, embedding = %s, 
+                    executive_briefing = COALESCE(%s, executive_briefing),
+                    clean_text = COALESCE(%s, clean_text),
+                    is_processed = TRUE 
+                WHERE id = %s;
+            """, (macro, macro_tags, micro, tldr, conf, on_topic, embedding, briefing, briefing, art_id))
+        except Exception:
+            cur.execute("""
+                UPDATE articles 
+                SET macro_tag = %s, micro_tags = %s, tldr = %s, embedding = %s, 
+                    executive_briefing = COALESCE(%s, executive_briefing),
+                    clean_text = COALESCE(%s, clean_text),
+                    is_processed = TRUE 
+                WHERE id = %s;
+            """, (macro, micro, tldr, embedding, briefing, briefing, art_id))
+
+    # Incremental Semantic Story Clustering (C2: auto-populate story_clusters on enrichment)
+    if embedding and macro and macro != "Off-Topic":
+        try:
+            import uuid
+            from evidence_verifier import assign_origins
+            with get_db() as cur:
+                cur.execute("""
+                    SELECT id, title, tldr, clean_text, original_url, published_at
+                    FROM articles
+                    WHERE is_processed = TRUE
+                      AND id != %s
+                      AND macro_tag = %s
+                      AND embedding IS NOT NULL
+                      AND (embedding <=> %s::vector) < %s
+                      AND published_at >= NOW() - INTERVAL '7 days'
+                    ORDER BY (embedding <=> %s::vector) ASC
+                    LIMIT 2;
+                """, (art_id, macro, embedding, 1.0 - similarity_thresholds()["same_story"], embedding))
+                siblings = cur.fetchall()
+                cur.execute("""
+                    SELECT id, title, tldr, clean_text, original_url, published_at
+                    FROM articles WHERE id = %s;
+                """, (art_id,))
+                self_row = cur.fetchone()
+                if self_row:
+                    all_rows = [self_row] + list(siblings)
+                    cluster_ids = [str(r[0]) for r in all_rows]
+                    origin_docs = [
+                        {
+                            "id": str(r[0]), "title": r[1], "tldr": r[2] or "",
+                            "text": r[3] or "", "url": r[4], "published_at": r[5]
+                        }
+                        for r in all_rows
+                    ]
+                    sorted_key = ",".join(sorted(x.strip().lower() for x in cluster_ids))
+                    det_cid = str(uuid.uuid5(uuid.NAMESPACE_OID, sorted_key))
+                    origin_info = assign_origins(origin_docs)
+                    c_title = (
+                        f"{macro} Intelligence Consensus: {self_row[1][:65]}"
+                        if len(all_rows) >= 2
+                        else f"{macro} Story Brief: {self_row[1][:65]}"
+                    )
+                    cur.execute("""
+                        INSERT INTO story_clusters
+                            (id, macro_tag, cluster_title, centroid_embedding, article_ids, independent_origins_count, origin_breakdown, updated_at)
+                        VALUES (%s, %s, %s, %s::vector, %s::uuid[], %s, %s::jsonb, NOW())
+                        ON CONFLICT (id) DO UPDATE
+                        SET cluster_title = EXCLUDED.cluster_title,
+                            article_ids = EXCLUDED.article_ids,
+                            independent_origins_count = EXCLUDED.independent_origins_count,
+                            origin_breakdown = EXCLUDED.origin_breakdown,
+                            updated_at = NOW();
+                    """, (
+                        det_cid,
+                        macro,
+                        c_title,
+                        embedding,
+                        cluster_ids,
+                        origin_info.get("independent_origins_count", 1),
+                        json.dumps(origin_info.get("origins", []))
+                    ))
+        except Exception as ce:
+            logger.debug("[Worker Cluster] Incremental story_clusters update skipped: %s", ce)
+
+
+
+OFF_TOPIC_TLDR = "Filtered out: Article does not match monitored news topics."
+
+
+def enrich_with_llm(art_id, title: str, safe_text: str, source: str = "") -> None:
+    """
+    nano mode: topic gate, Nano summary, labels, and executive briefing (llm_enrichment.py).
+    If a Nano step fails, the original single FAST_MODEL call labels and summarizes instead.
+    """
+    t0 = time.perf_counter()
+    try:
+        result = llm_enrichment.enrich(title, safe_text, source=source)
+    except Exception as e:
+        logger.warning("[Worker Nano] %s failed (%s); falling back to FAST_MODEL.", title[:35], e)
+        from taxonomy import normalize_macro_tag
+        macro, micro, tldr = generate_full_enrichment(title, safe_text)
+        macro = normalize_macro_tag(macro)
+        save_article_enrichment(art_id, macro=macro, macro_tags=[macro], micro=micro, tldr=tldr, title=title)
+        return
+
+    if result is None:
+        save_article_enrichment(
+            art_id,
+            macro="Off-Topic",
+            macro_tags=["Off-Topic"],
+            micro=["off_topic"],
+            tldr=OFF_TOPIC_TLDR,
+            title=title,
+            on_topic=NANO_OFF_TOPIC_SCORE
+        )
+        logger.info("[Worker Filtered] %s -> Off-Topic (topic gate)", title[:35])
+        return
+
+    save_article_enrichment(
+        art_id,
+        macro=result.macro_tag,
+        macro_tags=result.macro_tags,
+        micro=result.micro_tags,
+        tldr=result.tldr,
+        title=title,
+        on_topic=NANO_ON_TOPIC_SCORE,
+        briefing=result.briefing
+    )
+    logger.info(
+        "[Worker Nano] %s -> %s / %s (Total: %.0fms)",
+        title[:30], result.macro_tags, result.micro_tags, (time.perf_counter() - t0) * 1000
+    )
+
+
+def process_article(row, classifier=None, has_classifier: bool = False) -> None:
+    """Enriches one article; failures are counted in retry_count (gives up after 3)."""
+    art_id = row[0]
+    title = row[1]
+    text = row[2]
+    r_count = row[3]
+    source_feed = row[4] if len(row) > 4 else ""
+    try:
+        # Defensive cleaning to strip tail widgets before Laya triage & embedding
+        cleaned_body, _ = clean_markdown_article(text or "")
+        safe_text = cleaned_body[:20000] if len(cleaned_body) >= 200 else (text or "")[:20000]
+        t0 = time.perf_counter()
+        triage = None
+
+        if ENRICHMENT_ENGINE == "nano":
+            enrich_with_llm(art_id, title, safe_text, source=source_feed)
+            return
+
+        # --- STAGE 1: Fast Sub-100ms SLM Triage (if enabled) ---
+        if has_classifier:
+            triage = classifier.classify(title, safe_text)
+
+        if triage is not None:
+            # 1A. Noise / Spam Filter Gate
+            # Laya's on-topic check asks "is this really about <primary macro>?",
+            # which rejects valid cross-domain stories (e.g. an AI company's
+            # earnings). A cheap LLM second opinion rescues them.
+            rescued = triage.is_off_topic and confirm_on_topic(title, safe_text)
+            if rescued:
+                logger.info("[Worker Rescued] %s (Laya on-topic %.2f) -> LLM says on-topic; full classification.",
+                            title[:35], triage.on_topic_score)
+
+            if triage.is_off_topic and not rescued:
+                save_article_enrichment(
+                    art_id, 
+                    macro="Off-Topic", 
+                    macro_tags=["Off-Topic"],
+                    micro=["off_topic"], 
+                    tldr=OFF_TOPIC_TLDR,
+                    title=title,
+                    conf=triage.confidence,
+                    on_topic=triage.on_topic_score
+                )
+                logger.info(
+                    "[Worker Filtered] %s -> Off-Topic (Score: %.2f in %.0fms)", 
+                    title[:35], triage.on_topic_score, triage.latency_ms
+                )
+                return
+
+            # 1B. Low-Confidence Escalation (or rescued off-topic) -> Full LLM Classification + TL;DR
+            if triage.needs_escalation or rescued:
+                hint = (
+                    f"SLM Candidate Hint: Macro={triage.macro_tag} "
+                    f"(conf={triage.confidence:.2f}), Micro={', '.join(triage.micro_tags)}\n"
+                )
+                llm_macro, llm_micro, tldr = generate_full_enrichment(title, safe_text, hint=hint)
+                from taxonomy import normalize_macro_tag
+                norm_macro = normalize_macro_tag(llm_macro)
+                merged_macros = list(dict.fromkeys([norm_macro] + triage.macro_tags))[:3]
+                merged_micros = list(dict.fromkeys(llm_micro + triage.micro_tags))[:6]
+                save_article_enrichment(
+                    art_id,
+                    macro=norm_macro,
+                    macro_tags=merged_macros,
+                    micro=merged_micros,
+                    tldr=tldr,
+                    title=title,
+                    conf=triage.confidence,
+                    # A rescued story must pass the feed's on-topic filter (>= threshold).
+                    on_topic=max(triage.on_topic_score, RESCUED_ON_TOPIC_SCORE) if rescued else triage.on_topic_score
+                )
+                total_ms = (time.perf_counter() - t0) * 1000
+                logger.info(
+                    "[Worker Escalated] %s -> %s / %s (Laya Conf: %.2f | Total: %.0fms)",
+                    title[:30], merged_macros, merged_micros, triage.confidence, total_ms
+                )
+                return
+
+            # 1C. High-Confidence SLM Triage -> Generative TL;DR Only
+            tldr = generate_tldr_only(title, safe_text, triage.macro_tag, triage.micro_tags)
+            save_article_enrichment(
+                art_id,
+                macro=triage.macro_tag,
+                macro_tags=triage.macro_tags,
+                micro=triage.micro_tags,
+                tldr=tldr,
+                title=title,
+                conf=triage.confidence,
+                on_topic=triage.on_topic_score
+            )
+            total_ms = (time.perf_counter() - t0) * 1000
+            logger.info(
+                "[Worker Hybrid] %s -> %s / %s (Laya: %.0fms | Conf: %.2f | Total: %.0fms)",
+                title[:30], triage.macro_tags, triage.micro_tags, triage.latency_ms, triage.confidence, total_ms
+            )
+            return
+
+        # --- STAGE 2: Fallback Standard LLM Enrichment (only if Laya completely disabled) ---
+        macro, micro, tldr = generate_full_enrichment(title, safe_text)
+        save_article_enrichment(art_id, macro=macro, macro_tags=[macro], micro=micro, tldr=tldr, title=title)
+        logger.info("[Worker Legacy Enriched] %s -> %s / %s", title[:30], macro, micro)
+
+    except Exception as e:
+        err_msg = str(e)[:450]
+        current_retries = (r_count or 0) + 1
+        give_up = current_retries >= 3
+        logger.error("[Worker Error] Article %s (attempt %d/3): %s", art_id, current_retries, err_msg)
+        with get_db() as cur:
+            cur.execute("""
+                UPDATE articles 
+                SET retry_count = %s,
+                    error_message = %s,
+                    is_processed = %s,
+                    macro_tag = CASE WHEN %s THEN COALESCE(macro_tag, 'Off-Topic') ELSE macro_tag END
+                WHERE id = %s;
+            """, (current_retries, err_msg, give_up, give_up, art_id))
+
+
+def process_batch() -> bool:
+    with get_db() as cur:
+        cur.execute("""
+            SELECT id, title, clean_text, COALESCE(retry_count, 0), source_feed
+            FROM articles
+            WHERE is_processed = FALSE
+              AND (retry_count IS NULL OR retry_count < 3)
+            ORDER BY created_at ASC
+            LIMIT %s
+            FOR UPDATE SKIP LOCKED;
+        """, (BATCH_SIZE,))
+        batch = cur.fetchall()
+
+    if not batch:
+        return False
+
+    if ENRICHMENT_ENGINE == "nano":
+        with ThreadPoolExecutor(max_workers=NANO_CONCURRENCY) as pool:
+            list(pool.map(process_article, batch))
+        return True
+
+    classifier = get_classifier()
+    has_classifier = classifier is not None and classifier.is_available()
+    for row in batch:
+        process_article(row, classifier, has_classifier)
+    return True
+
+
+if __name__ == "__main__":
+    init_db_schema()
+    if ENRICHMENT_ENGINE == "nano":
+        mode_str = (f"NANO (topic gate {FAST_MODEL}, summary {llm_enrichment.SUMMARY_MODEL}, "
+                    f"labels {llm_enrichment.TAG_MODEL}; {NANO_CONCURRENCY} in parallel)")
+    else:
+        classifier = get_classifier()
+        mode_str = "HYBRID (Laya SLM Triage + Generative TLDR)" if (classifier and classifier.is_available()) else "LEGACY LLM-ONLY"
+    logger.info("Worker started in %s mode. Polling for unprocessed articles...", mode_str)
+    
+    while True:
+        had_work = process_batch()
+        if not had_work:
+            time.sleep(3)

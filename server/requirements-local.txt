@@ -1,0 +1,7 @@
+# Optional: local models instead of Nebius.
+#   ENRICHMENT_ENGINE=hybrid  -> Laya SLM triage (classifier.py)
+#   EMBEDDING_BACKEND=local   -> all-MiniLM-L6-v2 embeddings (embedder.py)
+-r requirements.txt
+torch>=2.2.0
+sentence-transformers>=2.6.0
+laya>=0.4.0
