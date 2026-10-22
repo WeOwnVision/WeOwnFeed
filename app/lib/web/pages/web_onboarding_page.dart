@@ -230,28 +230,33 @@ class _PickStep extends StatelessWidget {
 
   final AppState state;
 
-  /// Picking is split into three screens: categories → topics and "+" follows → sentence.
+  /// Picking is split into five screens: categories → topics → "+" follows
+  /// → sites → sentence. Only the categories are required.
   static const _titles = [
     _StepTitle(
-      overline: 'Step 1 of 3 · Categories',
+      overline: '1 / 5 · Categories',
       title: 'What do you want to read about?',
-      subtitle:
-          'Pick one or more areas. Your Feed shows stories from the '
-          'categories you pick.',
+      subtitle: 'Pick one or more.',
     ),
     _StepTitle(
-      overline: 'Step 1 of 3 · Topics',
+      overline: '2 / 5 · Topics · Optional',
       title: 'Narrow it down',
-      subtitle:
-          'Topics decide which stories come first. You can also follow a '
-          'company, product or person, or a site. All of these are optional.',
+      subtitle: 'These topics come first in your Feed.',
     ),
     _StepTitle(
-      overline: 'Step 1 of 3 · Your why',
+      overline: '3 / 5 · Follow · Optional',
+      title: 'Follow something specific',
+      subtitle: 'A company, product or person.',
+    ),
+    _StepTitle(
+      overline: '4 / 5 · Sites · Optional',
+      title: 'Follow a site',
+      subtitle: 'Any newsroom or blog, even without RSS.',
+    ),
+    _StepTitle(
+      overline: '5 / 5 · Your why · Optional',
       title: 'What should your feed help you with?',
-      subtitle:
-          'Optional. One sentence, in any language. Stories closer to it '
-          'rank higher. Next, a quick taste check tunes your Feed.',
+      subtitle: 'One sentence, in any language.',
     ),
   ];
 
@@ -342,11 +347,9 @@ class _TasteStepState extends State<_TasteStep> {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           _StepTitle(
-            overline: 'Step 2 of 3 · about 30 seconds',
+            overline: 'About 30 seconds',
             title: 'Would you read these?',
-            subtitle:
-                'Swipe right on stories you would read, left on ones you '
-                'would not. Every answer tunes your Feed right away.',
+            subtitle: 'Swipe right if you would, left if not.',
           ),
           const SizedBox(height: 32),
           Center(
@@ -604,7 +607,7 @@ class _RevealStep extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _StepTitle(
-          overline: 'Step 3 of 3 · your feed is ready',
+          overline: 'Ready',
           title: 'Here is your Feed, $name',
           subtitle: 'Built from $basisText.',
         ),
@@ -614,9 +617,7 @@ class _RevealStep extends StatelessWidget {
             child: EmptyView(
               icon: Icons.hourglass_empty_rounded,
               title: 'Your stories are on their way',
-              message:
-                  'We do not have stories for these topics yet. Fresh ones '
-                  'will appear in your Feed as they arrive.',
+              message: 'Fresh stories will appear in your Feed shortly.',
             ),
           )
         else

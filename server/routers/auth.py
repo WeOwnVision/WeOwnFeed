@@ -1,8 +1,9 @@
 """
 Accounts: username + password, bearer session tokens, per-user rate limits.
 
-  POST /api/auth/register  {username, password} -> {user, token}
   POST /api/auth/login     {username, password} -> {user, token}
+                           signs in, or creates the account when the username is new
+  POST /api/auth/register  {username, password} -> {user, token}  (create only)
   POST /api/auth/logout    revokes the token
   GET  /api/auth/me        the signed-in user
 
@@ -17,7 +18,6 @@ import base64
 import binascii
 import hashlib
 import hmac
-import re
 import secrets
 import threading
 import time
@@ -33,9 +33,7 @@ from db import get_db
 router = APIRouter(tags=["Auth"])
 
 SESSION_DAYS = 30
-USERNAME_RE = re.compile(r"^[A-Za-z0-9_.-]{3,32}$")
-PASSWORD_MIN = 8
-PASSWORD_MAX = 128
+USERNAME_MAX = 50  # users.username is VARCHAR(50)
 
 # scrypt cost: ~16 MB and ~50 ms per hash.
 _SCRYPT_N, _SCRYPT_R, _SCRYPT_P = 2 ** 14, 8, 1
@@ -53,8 +51,8 @@ CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions (user_id);
 
 
 class Credentials(BaseModel):
-    username: str = Field(..., description="3-32 characters: letters, digits, '_', '.', '-'")
-    password: str = Field(..., description=f"{PASSWORD_MIN}-{PASSWORD_MAX} characters")
+    username: str = Field(..., description=f"1-{USERNAME_MAX} characters")
+    password: str = Field(..., description="Any non-empty text")
 
 
 # --- passwords ---------------------------------------------------------------
@@ -87,10 +85,10 @@ def verify_password(password: str, stored: Optional[str]) -> bool:
 
 def _validate(creds: Credentials) -> Tuple[str, str]:
     username = creds.username.strip()
-    if not USERNAME_RE.match(username):
-        raise HTTPException(400, "Username must be 3-32 characters: letters, digits, '_', '.' or '-'.")
-    if not PASSWORD_MIN <= len(creds.password) <= PASSWORD_MAX:
-        raise HTTPException(400, f"Password must be {PASSWORD_MIN}-{PASSWORD_MAX} characters.")
+    if not username or len(username) > USERNAME_MAX:
+        raise HTTPException(400, f"Enter a username (up to {USERNAME_MAX} characters).")
+    if not creds.password:
+        raise HTTPException(400, "Enter a password.")
     return username, creds.password
 
 
@@ -178,33 +176,52 @@ def _signed_in(cur, user_id: str) -> dict:
     return {"user": _user_out(cur.fetchone()), "token": create_session(cur, user_id)}
 
 
+def _create_user(cur, request: Request, username: str, password: str) -> Optional[str]:
+    """New user id, or None when the username is taken."""
+    rate_limit(_client_ip(request), "register", limit=20, window_seconds=3600)
+    avatar = f"https://avatar.iran.liara.run/public/boy?username={username}"
+    cur.execute("""
+        INSERT INTO users (username, avatar_url, onboarding_completed, password_hash)
+        VALUES (%s, %s, FALSE, %s)
+        ON CONFLICT (username) DO NOTHING
+        RETURNING id;
+    """, (username, avatar, hash_password(password)))
+    row = cur.fetchone()
+    return str(row[0]) if row else None
+
+
 @router.post("/api/auth/register", status_code=status.HTTP_201_CREATED)
 def register(creds: Credentials, request: Request):
-    rate_limit(_client_ip(request), "register", limit=20, window_seconds=3600)
     username, password = _validate(creds)
-    avatar = f"https://avatar.iran.liara.run/public/boy?username={username}"
     with get_db() as cur:
-        cur.execute("""
-            INSERT INTO users (username, avatar_url, onboarding_completed, password_hash)
-            VALUES (%s, %s, FALSE, %s)
-            ON CONFLICT (username) DO NOTHING
-            RETURNING id;
-        """, (username, avatar, hash_password(password)))
-        row = cur.fetchone()
-        if not row:
+        user_id = _create_user(cur, request, username, password)
+        if user_id is None:
             raise HTTPException(status.HTTP_409_CONFLICT, "This username is taken.")
-        return _signed_in(cur, str(row[0]))
+        return _signed_in(cur, user_id)
 
 
 @router.post("/api/auth/login")
 def login(creds: Credentials, request: Request):
-    username = creds.username.strip()
+    """One screen for both: a new username creates the account, an account from
+    the old username-only login takes this password, any other needs it."""
+    username, password = _validate(creds)
     rate_limit(f"{_client_ip(request)}|{username.lower()}", "login", limit=10, window_seconds=900)
     with get_db() as cur:
         cur.execute("SELECT id, password_hash FROM users WHERE username = %s;", (username,))
         row = cur.fetchone()
-        if not verify_password(creds.password, row[1] if row else None):
-            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong username or password.")
+        if row is None:
+            user_id = _create_user(cur, request, username, password)
+            if user_id is None:  # created by a parallel request a moment ago
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong password.")
+            return _signed_in(cur, user_id)
+        if row[1] is None:
+            cur.execute("UPDATE users SET password_hash = %s WHERE id = %s AND password_hash IS NULL;",
+                        (hash_password(password), row[0]))
+            if cur.rowcount == 0:  # claimed by a parallel request a moment ago
+                raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong password.")
+            return _signed_in(cur, str(row[0]))
+        if not verify_password(password, row[1]):
+            raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Wrong password.")
         return _signed_in(cur, str(row[0]))
 
 

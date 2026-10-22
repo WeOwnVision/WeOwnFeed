@@ -54,10 +54,10 @@ def test_missing_or_broken_hash_never_verifies():
 
 
 def test_username_and_password_rules():
-    ok = auth.Credentials(username=" judge_01 ", password="12345678")
-    assert auth._validate(ok) == ("judge_01", "12345678")
-    for name, pw in (("ab", "12345678"), ("has space", "12345678"), ("x" * 33, "12345678"),
-                     ("judge", "short"), ("judge", "x" * 129)):
+    """Demo rules: any non-empty username up to 50 characters, any non-empty password."""
+    ok = auth.Credentials(username=" judge 01 ", password="1")
+    assert auth._validate(ok) == ("judge 01", "1")
+    for name, pw in (("", "pw"), ("   ", "pw"), ("x" * 51, "pw"), ("judge", "")):
         _raises(400, auth._validate, auth.Credentials(username=name, password=pw))
     print("✓ test_username_and_password_rules PASSED")
 

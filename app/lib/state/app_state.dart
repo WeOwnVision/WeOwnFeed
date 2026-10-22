@@ -108,21 +108,15 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Signs in (`POST /api/auth/login`) or, with [createAccount], creates
-  /// the account first (`POST /api/auth/register`). The response's
-  /// `onboarding_completed` decides whether onboarding opens.
-  Future<void> login(
-    String username,
-    String password, {
-    bool createAccount = false,
-  }) async {
+  /// Signs in (`POST /api/auth/login`); the server creates the account when
+  /// the username is new. The response's `onboarding_completed` decides
+  /// whether onboarding opens.
+  Future<void> login(String username, String password) async {
     loggingIn = true;
     sessionError = null;
     notifyListeners();
     try {
-      final session = createAccount
-          ? await api.register(username, password)
-          : await api.login(username, password);
+      final session = await api.login(username, password);
       api.authToken = session.token;
       await _prefs?.setString(_kToken, session.token);
       await _prefs?.setString(_kUsername, session.user.username);

@@ -85,7 +85,6 @@ class _LoginScreenState extends State<_LoginScreen> {
     text: widget.state.lastUsername ?? '',
   );
   final _password = TextEditingController();
-  bool _createAccount = false;
   bool _showPassword = false;
 
   @override
@@ -100,7 +99,7 @@ class _LoginScreenState extends State<_LoginScreen> {
     if (name.isEmpty || _password.text.isEmpty || widget.state.loggingIn) {
       return;
     }
-    widget.state.login(name, _password.text, createAccount: _createAccount);
+    widget.state.login(name, _password.text);
   }
 
   InputDecoration _decoration(String hint, IconData icon, {Widget? suffix}) {
@@ -160,7 +159,7 @@ class _LoginScreenState extends State<_LoginScreen> {
                     ),
                     const SizedBox(height: 32),
                     Text(
-                      _createAccount ? 'Create your account' : 'Welcome back',
+                      'Welcome',
                       style: GoogleFonts.playfairDisplay(
                         color: AppColors.textPrimary,
                         fontSize: 28,
@@ -169,10 +168,8 @@ class _LoginScreenState extends State<_LoginScreen> {
                     ),
                     const SizedBox(height: 6),
                     Text(
-                      _createAccount
-                          ? 'Pick a username and a password of at least 8 '
-                                'characters.'
-                          : 'Sign in to open your feed.',
+                      'Enter a username and a password. A new username '
+                      'creates your account.',
                       style: GoogleFonts.inter(
                         color: AppColors.textBody,
                         fontSize: 14,
@@ -186,7 +183,7 @@ class _LoginScreenState extends State<_LoginScreen> {
                       enabled: !state.loggingIn,
                       autofillHints: const [AutofillHints.username],
                       textInputAction: TextInputAction.next,
-                      maxLength: 32,
+                      maxLength: 50,
                       cursorColor: AppColors.accentLight,
                       style: fieldStyle,
                       decoration: _decoration(
@@ -200,13 +197,8 @@ class _LoginScreenState extends State<_LoginScreen> {
                       autofocus: _username.text.isNotEmpty,
                       enabled: !state.loggingIn,
                       obscureText: !_showPassword,
-                      autofillHints: [
-                        _createAccount
-                            ? AutofillHints.newPassword
-                            : AutofillHints.password,
-                      ],
+                      autofillHints: const [AutofillHints.password],
                       onSubmitted: (_) => _submit(),
-                      maxLength: 128,
                       cursorColor: AppColors.accentLight,
                       style: fieldStyle,
                       decoration: _decoration(
@@ -267,26 +259,10 @@ class _LoginScreenState extends State<_LoginScreen> {
                               ),
                             )
                           : WebButton(
-                              label: offline
-                                  ? 'Try again'
-                                  : _createAccount
-                                  ? 'Create account'
-                                  : 'Sign in',
+                              label: offline ? 'Try again' : 'Continue',
                               icon: Icons.arrow_forward_rounded,
                               onTap: _submit,
                             ),
-                    ),
-                    const SizedBox(height: 18),
-                    Center(
-                      child: LinkButton(
-                        _createAccount
-                            ? 'I already have an account'
-                            : 'New here? Create an account',
-                        onTap: () {
-                          if (state.loggingIn) return;
-                          setState(() => _createAccount = !_createAccount);
-                        },
-                      ),
                     ),
                   ],
                 ),

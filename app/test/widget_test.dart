@@ -348,11 +348,11 @@ void main() {
 
   testWidgets('login screen signs the user in', (tester) async {
     await _pumpAt(tester, const WebGate(), const Size(1440, 900));
-    expect(find.text('Welcome back'), findsOneWidget);
+    expect(find.text('Welcome'), findsOneWidget);
 
     await tester.enterText(find.byType(TextField).at(0), 'can_test');
     await tester.enterText(find.byType(TextField).at(1), _password);
-    await tester.tap(find.text('Sign in'));
+    await tester.tap(find.text('Continue'));
     await _settle(tester);
     expect(AppState.instance.user?.username, 'can_test');
     final signIn = _requests.singleWhere(
@@ -496,14 +496,13 @@ void main() {
   ) async {
     _useServer(_server(onboarded: false));
     await _pumpAt(tester, const WebGate(), const Size(1440, 900));
-    await tester.tap(find.text('New here? Create an account'));
-    await _settle(tester);
     await tester.enterText(find.byType(TextField).at(0), 'new_reader');
     await tester.enterText(find.byType(TextField).at(1), _password);
-    await tester.tap(find.text('Create account'));
+    await tester.tap(find.text('Continue'));
     await _settle(tester);
+    // One screen: a new username signs up through the same login call.
     expect(
-      _requests.where((r) => r.url.path == '/api/auth/register'),
+      _requests.where((r) => r.url.path == '/api/auth/login'),
       hasLength(1),
     );
     final state = AppState.instance;
@@ -521,11 +520,12 @@ void main() {
     await tap('Artificial Intelligence');
     await tap('Next');
 
-    // 1b. Topics and "+" follows.
+    // 1b. Topics.
     expect(find.text('Narrow it down'), findsOneWidget);
     await tap('LLM Agents');
+    await tap('Next');
 
-    // "+" follow: something the user types, together with its category.
+    // 1c. "+" follow: something the user types, together with its category.
     expect(find.text('Follow something specific'), findsOneWidget);
     final followField = find.byType(TextField).first;
     await tester.enterText(followField, 'www.revolut.com');
@@ -535,10 +535,13 @@ void main() {
     await tap('Add');
     expect(find.text('Revolut'), findsOneWidget);
     expect(find.textContaining('following Revolut'), findsOneWidget);
-
     await tap('Next');
 
-    // 1c. The optional "why" sentence; an example chip fills the field.
+    // 1d. Follow a site (skipped here).
+    expect(find.text('Follow a site'), findsOneWidget);
+    await tap('Next');
+
+    // 1e. The optional "why" sentence; an example chip fills the field.
     expect(find.text('What should your feed help you with?'), findsOneWidget);
     await tap('I invest');
     expect(find.widgetWithText(TextField, 'I invest'), findsOneWidget);
@@ -901,19 +904,17 @@ void main() {
   testWidgets('wrong password shows the server message', (tester) async {
     _useServer(
       MockClient(
-        (_) async => http.Response(
-          jsonEncode({'detail': 'Wrong username or password.'}),
-          401,
-        ),
+        (_) async =>
+            http.Response(jsonEncode({'detail': 'Wrong password.'}), 401),
       ),
     );
     await _pumpAt(tester, const WebGate(), const Size(1440, 900));
     await tester.enterText(find.byType(TextField).at(0), 'can_test');
     await tester.enterText(find.byType(TextField).at(1), 'nope-nope');
-    await tester.tap(find.text('Sign in'));
+    await tester.tap(find.text('Continue'));
     await _settle(tester);
     expect(AppState.instance.user, isNull);
-    expect(find.text('Wrong username or password.'), findsOneWidget);
+    expect(find.text('Wrong password.'), findsOneWidget);
   });
 
   testWidgets('tunnel down shows Server unavailable', (tester) async {

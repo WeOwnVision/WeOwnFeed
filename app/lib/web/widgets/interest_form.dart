@@ -55,12 +55,13 @@ class InterestForm extends StatefulWidget {
   /// Number of category card columns; picked from the width if not given.
   final int? columns;
 
-  /// Onboarding: categories, topics and the sentence come in separate,
-  /// animated steps. The Profile editor dialog shows all of them on one page.
+  /// Onboarding: each section is its own animated step. The Profile editor
+  /// dialog shows all of them on one page.
   final bool stepped;
 
   /// Each step's heading in [stepped] mode (0: categories, 1: topics,
-  /// 2: sentence).
+  /// 2: "+" follows, 3: sites, 4: sentence). The sections then skip their
+  /// own headings.
   final Widget Function(int step)? headerBuilder;
 
   /// Most subtopic tags the server accepts.
@@ -103,7 +104,7 @@ class _InterestFormState extends State<InterestForm> {
   /// The step and transition direction in [InterestForm.stepped] mode.
   int _step = 0;
   bool _forward = true;
-  static const _lastStep = 2;
+  static const _lastStep = 4;
 
   static final _urlish = RegExp(
     r'https?://|www\.|\.(com|net|org|io)\b',
@@ -261,9 +262,9 @@ class _InterestFormState extends State<InterestForm> {
     );
   }
 
-  /// Onboarding: categories → topics and "+" follows → sentence. Steps slide
-  /// and fade; going forward they come from the right, going back from the
-  /// left.
+  /// Onboarding: categories → topics → "+" follows → sites → sentence, one
+  /// per screen. Steps slide and fade; going forward they come from the
+  /// right, going back from the left.
   Widget _steppedBody(List<TaxonomyCategory> taxonomy) {
     final body = switch (_step) {
       0 => _CategoryGrid(
@@ -273,16 +274,9 @@ class _InterestFormState extends State<InterestForm> {
         onToggle: _toggleMacro,
         animateIn: true,
       ),
-      1 => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _topics(taxonomy),
-          const SizedBox(height: 14),
-          _followSection(taxonomy),
-          const SizedBox(height: 32),
-          _siteSection(),
-        ],
-      ),
+      1 => _topics(taxonomy, showHeading: false),
+      2 => _followSection(taxonomy, showHeading: false),
+      3 => _siteSection(showHeading: false),
       _ => _contextSection(showHeading: false),
     };
     return Column(
@@ -334,7 +328,18 @@ class _InterestFormState extends State<InterestForm> {
     );
   }
 
-  Widget _topics(List<TaxonomyCategory> taxonomy) {
+  /// Count shown instead of the heading in [InterestForm.stepped] mode;
+  /// [warning] replaces it in red.
+  Widget _counter(String text, {String? warning}) => Text(
+    warning ?? text,
+    style: GoogleFonts.inter(
+      color: warning != null ? AppColors.dislike : AppColors.textMuted,
+      fontSize: 13,
+      fontWeight: FontWeight.w600,
+    ),
+  );
+
+  Widget _topics(List<TaxonomyCategory> taxonomy, {bool showHeading = true}) {
     final chosen = [
       for (final c in taxonomy)
         if (_macros.contains(c.macro)) c,
@@ -343,40 +348,49 @@ class _InterestFormState extends State<InterestForm> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Text(
-              'Fine-tune with topics',
-              style: GoogleFonts.playfairDisplay(
-                color: AppColors.textPrimary,
-                fontSize: 22,
-                fontWeight: FontWeight.w500,
+        if (!showHeading)
+          _counter(
+            '$count / ${InterestForm.maxTopics} topics',
+            warning: _limitHit
+                ? 'Up to ${InterestForm.maxTopics} topics. Remove one first.'
+                : null,
+          )
+        else ...[
+          Row(
+            children: [
+              Text(
+                'Fine-tune with topics',
+                style: GoogleFonts.playfairDisplay(
+                  color: AppColors.textPrimary,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            const OverlineLabel('Optional'),
-            const Spacer(),
-            Text(
-              '$count / ${InterestForm.maxTopics} topics',
-              style: GoogleFonts.inter(
-                color: _limitHit ? AppColors.dislike : AppColors.textMuted,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+              const SizedBox(width: 12),
+              const OverlineLabel('Optional'),
+              const Spacer(),
+              Text(
+                '$count / ${InterestForm.maxTopics} topics',
+                style: GoogleFonts.inter(
+                  color: _limitHit ? AppColors.dislike : AppColors.textMuted,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
-            ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(
-          _limitHit
-              ? 'You can pick up to ${InterestForm.maxTopics} topics. '
-                    'Remove one to add another.'
-              : 'Stories tagged with these topics rank higher in your Feed.',
-          style: GoogleFonts.inter(
-            color: _limitHit ? AppColors.dislike : AppColors.textMuted,
-            fontSize: 13.5,
+            ],
           ),
-        ),
+          const SizedBox(height: 6),
+          Text(
+            _limitHit
+                ? 'You can pick up to ${InterestForm.maxTopics} topics. '
+                      'Remove one to add another.'
+                : 'Stories tagged with these topics rank higher in your Feed.',
+            style: GoogleFonts.inter(
+              color: _limitHit ? AppColors.dislike : AppColors.textMuted,
+              fontSize: 13.5,
+            ),
+          ),
+        ],
         const SizedBox(height: 18),
         if (chosen.isEmpty)
           Container(
@@ -426,7 +440,10 @@ class _InterestFormState extends State<InterestForm> {
   }
 
   /// Following a specific company, product or person with "+".
-  Widget _followSection(List<TaxonomyCategory> taxonomy) {
+  Widget _followSection(
+    List<TaxonomyCategory> taxonomy, {
+    bool showHeading = true,
+  }) {
     final macros = _selectedMacros(taxonomy);
     final macro = _followMacroFor(macros);
     final full = _follows.length >= ApiService.maxFollows;
@@ -436,35 +453,41 @@ class _InterestFormState extends State<InterestForm> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Text(
-              'Follow something specific',
-              style: GoogleFonts.playfairDisplay(
-                color: AppColors.textPrimary,
-                fontSize: 22,
-                fontWeight: FontWeight.w500,
+        if (!showHeading)
+          _counter('${_follows.length} / ${ApiService.maxFollows}')
+        else ...[
+          Row(
+            children: [
+              Text(
+                'Follow something specific',
+                style: GoogleFonts.playfairDisplay(
+                  color: AppColors.textPrimary,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            const OverlineLabel('Optional'),
-            const Spacer(),
-            Text(
-              '${_follows.length} / ${ApiService.maxFollows}',
-              style: GoogleFonts.inter(
-                color: AppColors.textMuted,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+              const SizedBox(width: 12),
+              const OverlineLabel('Optional'),
+              const Spacer(),
+              Text(
+                '${_follows.length} / ${ApiService.maxFollows}',
+                style: GoogleFonts.inter(
+                  color: AppColors.textMuted,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'A company, product or person. Stories that mention it come first.',
+            style: GoogleFonts.inter(
+              color: AppColors.textMuted,
+              fontSize: 13.5,
             ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(
-          'A company, product or person, e.g. Revolut, Steam Deck or OpenAI. '
-          'We search for it and put stories that mention it first.',
-          style: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 13.5),
-        ),
+          ),
+        ],
         const SizedBox(height: 14),
         Opacity(
           opacity: enabled ? 1 : 0.5,
@@ -486,7 +509,7 @@ class _InterestFormState extends State<InterestForm> {
                         ? 'Pick a category above first'
                         : full
                         ? 'You follow ${ApiService.maxFollows} things'
-                        : 'Type a name to follow',
+                        : 'Type a name, e.g. OpenAI',
                     prefixIcon: const Icon(
                       Icons.add_rounded,
                       color: AppColors.iconMuted,
@@ -595,42 +618,48 @@ class _InterestFormState extends State<InterestForm> {
   /// "Follow a site": a newsroom or blog without RSS. The server maps the
   /// site with Tavily Map, adds the newest posts to the feed with Crawl, then
   /// checks for new posts once a day. Adding and removing are saved at once.
-  Widget _siteSection() {
+  Widget _siteSection({bool showHeading = true}) {
     final sites = _state.sites;
     final full = sites.length >= ApiService.maxSites;
     final enabled = _state.hasServerUser && !full && !_state.addingSite;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
-          children: [
-            Text(
-              'Follow a site',
-              style: GoogleFonts.playfairDisplay(
-                color: AppColors.textPrimary,
-                fontSize: 22,
-                fontWeight: FontWeight.w500,
+        if (!showHeading)
+          _counter('${sites.length} / ${ApiService.maxSites}')
+        else ...[
+          Row(
+            children: [
+              Text(
+                'Follow a site',
+                style: GoogleFonts.playfairDisplay(
+                  color: AppColors.textPrimary,
+                  fontSize: 22,
+                  fontWeight: FontWeight.w500,
+                ),
               ),
-            ),
-            const SizedBox(width: 12),
-            const OverlineLabel('Optional'),
-            const Spacer(),
-            Text(
-              '${sites.length} / ${ApiService.maxSites}',
-              style: GoogleFonts.inter(
-                color: AppColors.textMuted,
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
+              const SizedBox(width: 12),
+              const OverlineLabel('Optional'),
+              const Spacer(),
+              Text(
+                '${sites.length} / ${ApiService.maxSites}',
+                style: GoogleFonts.inter(
+                  color: AppColors.textMuted,
+                  fontSize: 13,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Any newsroom or blog, even without RSS.',
+            style: GoogleFonts.inter(
+              color: AppColors.textMuted,
+              fontSize: 13.5,
             ),
-          ],
-        ),
-        const SizedBox(height: 6),
-        Text(
-          'A newsroom or blog, even one without RSS, e.g. anthropic.com/news. '
-          'Tavily maps the site and brings its newest posts into your Feed.',
-          style: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 13.5),
-        ),
+          ),
+        ],
         const SizedBox(height: 14),
         Opacity(
           opacity: enabled || _state.addingSite ? 1 : 0.5,
@@ -649,7 +678,7 @@ class _InterestFormState extends State<InterestForm> {
                   decoration: _inputDecoration(
                     full
                         ? 'You follow ${ApiService.maxSites} sites'
-                        : 'Paste a site address',
+                        : 'Paste a site address, e.g. anthropic.com/news',
                     prefixIcon: const Icon(
                       Icons.language_rounded,
                       color: AppColors.iconMuted,
@@ -846,7 +875,7 @@ class _InterestFormState extends State<InterestForm> {
                     fontWeight: FontWeight.w600,
                   ),
                 ),
-                if (macros.isNotEmpty) ...[
+                if (macros.isNotEmpty && !widget.stepped) ...[
                   const SizedBox(height: 3),
                   Text(
                     'Your Daily Brief covers ${macros.first}, your first pick.',

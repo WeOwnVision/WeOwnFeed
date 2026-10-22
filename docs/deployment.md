@@ -113,8 +113,10 @@ Database migrations run automatically when the API starts.
 
 ### 1.7 Moving from the old username-only login
 
-Accounts created before passwords existed cannot sign in. Delete them once
-(their likes, comments and follows go with them):
+Accounts created before passwords existed have no password yet: the first
+sign-in with that username sets one, so anyone who types the name first owns
+the account. To start clean instead, delete them once (their likes, comments
+and follows go with them):
 
 ```bash
 docker compose exec api python purge_passwordless_users.py         # shows the count

@@ -141,3 +141,228 @@ Our V0 prototype (`server/legacy/scraping_algorithm.py`, preserved in the repo f
 |  • Deep Synthesis & Daily Digest powered by nvidia/nemotron-3-super-120b-a12b     |
 |  • Scoped WAI Streaming Assistant & On-Demand Tavily Research Deep Inspect        |
 +-----------------------------------------------------------------------------------+
+```
+
+---
+
+## 6. Setup Guide
+
+WeOwnFeed has **two separate ends** that run side by side and talk over HTTP:
+
+| End | Folder | Stack | Default address |
+| :--- | :--- | :--- | :--- |
+| **Server** (API + worker + ingestion + database) | [`server/`](server) | FastAPI · Python 3.11 · PostgreSQL 16 + `pgvector` | `http://127.0.0.1:8000` (Swagger: `/docs`) |
+| **Frontend** (web & mobile app) | [`app/`](app) | Flutter 3.35.3 · Dart `^3.9.2` | opened by `flutter run` (e.g. in Chrome) |
+
+The app reads the API address from `API_BASE_URL` at build time (default `http://127.0.0.1:8000`), and the server only accepts browser calls from the origins listed in `CORS_ORIGINS` (empty = any `localhost` / `127.0.0.1` port, for local development). With the defaults below, **the two ends connect with no extra configuration**.
+
+### 6.1 Prerequisites
+
+| Tool | Version | Needed for | Check |
+| :--- | :--- | :--- | :--- |
+| [Git](https://git-scm.com/downloads) | any | cloning the repo | `git --version` |
+| [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Docker Engine + Compose v2) | latest | PostgreSQL + `pgvector`, or the whole server | `docker compose version` |
+| [Python](https://www.python.org/downloads/) | **3.11+** | running the server without Docker (option B) and the tests | `python --version` |
+| [Flutter SDK](https://docs.flutter.dev/get-started/install) | **3.35.3** (stable) | the frontend | `flutter --version` |
+| Google Chrome | latest | running the web app | — |
+
+API keys (they go into `server/.env`, see [6.3](#63-configure-the-server)):
+
+* **Nebius Token Factory** key → `AI_API_KEY` ([tokenfactory.nebius.com](https://tokenfactory.nebius.com))
+* **Tavily** key → `TAVILY_API_KEY` ([app.tavily.com](https://app.tavily.com))
+
+> No Tavily credits to spare? Set `TAVILY_MOCK=1` in `.env` for offline demo mode: Tavily calls are answered from `server/tests/fixtures` and spend no credits.
+
+### 6.2 Clone the repository
+
+```bash
+git clone https://github.com/WeOwnVision/WeOwnFeed.git
+cd WeOwnFeed
+```
+
+### 6.3 Configure the server
+
+Create `server/.env` from the template:
+
+```bash
+cd server
+
+# macOS / Linux / Git Bash
+cp .env.example .env
+
+# Windows (PowerShell)
+Copy-Item .env.example .env
+```
+
+Open `server/.env` and set at least:
+
+| Variable | Value |
+| :--- | :--- |
+| `AI_API_KEY` | your Nebius Token Factory key |
+| `TAVILY_API_KEY` | your Tavily key (or several, comma separated, in `TAVILY_API_KEYS`) |
+| `INGESTION_SECRET` | any long random string: `python -c "import secrets; print(secrets.token_urlsafe(36))"` |
+| `POSTGRES_PASSWORD` | a password of your choice; use the **same** value inside `DATABASE_URL` |
+
+Everything else (models, embeddings, cadences, `CORS_ORIGINS`) already has working defaults, each explained in [`server/.env.example`](server/.env.example). `.env` is git-ignored: never commit real keys.
+
+### 6.4 Start the server
+
+Pick **one** of the two options and run all commands from the `server/` folder.
+
+#### Option A: everything in Docker (recommended)
+
+One command builds the image and starts the database, API, enrichment worker, demand-driven ingestion and the image sweeper:
+
+```bash
+docker compose up -d --build
+```
+
+Check that it is up (the `api` service should become `healthy`):
+
+```bash
+docker compose ps
+docker compose logs -f api worker     # Ctrl+C stops following; the services keep running
+```
+
+On a new, empty database, fill it once. This runs every query template a single time and spends Tavily credits:
+
+```bash
+docker compose exec ingest python ingest_tavily.py --seed
+```
+
+Optional: also start the RSS-less newsroom watcher (Tavily Map + Extract):
+
+```bash
+docker compose --profile watcher up -d
+```
+
+Stop everything (the data stays in the `pg_data` volume):
+
+```bash
+docker compose down
+```
+
+#### Option B: Python on your machine, database in Docker
+
+Handy while developing the server: `--reload` restarts the API on every code change.
+
+**1. Start only PostgreSQL + `pgvector`.** On its first start, `schema.sql` creates the base tables:
+
+```bash
+docker compose up -d postgres
+```
+
+**2. Create a virtual environment and install the packages:**
+
+```bash
+python -m venv venv
+
+# Windows (PowerShell)
+venv\Scripts\Activate.ps1
+# macOS / Linux
+source venv/bin/activate
+
+pip install -r requirements.txt
+```
+
+Optional, only for local models (`ENRICHMENT_ENGINE=hybrid` or `EMBEDDING_BACKEND=local`; installs PyTorch):
+
+```bash
+pip install -r requirements-local.txt
+```
+
+**3. Run each process in its own terminal** (with the virtual environment active in each). Database migrations run automatically when the API starts.
+
+```bash
+# Terminal 1: API
+uvicorn main:app --reload --host 127.0.0.1 --port 8000
+
+# Terminal 2: AI enrichment worker (summaries, tags, briefings, embeddings)
+python worker.py
+
+# Terminal 3: news ingestion (needs the API running)
+python ingest_tavily.py --seed      # first start / empty database: run every template once
+python ingest_tavily.py --loop      # afterwards: keep fetching followed topics at their cadence
+
+# Terminal 4 (optional): RSS-less newsroom watcher
+python site_watcher.py --loop
+
+# Terminal 5 (optional): fill in missing article cover images
+python backfill_article_images.py --loop
+```
+
+#### Check the server
+
+* **http://127.0.0.1:8000/docs** opens the Swagger UI.
+* `curl http://127.0.0.1:8000/api/taxonomy` returns JSON.
+
+### 6.5 Start the frontend
+
+Open a **new terminal** in the repository root and go to the `app/` folder:
+
+```bash
+cd app
+```
+
+Install the Dart / Flutter packages:
+
+```bash
+flutter pub get
+```
+
+Run the web app in Chrome. It connects to the local server at `http://127.0.0.1:8000` by default:
+
+```bash
+flutter run -d chrome
+```
+
+Sign up with a username and password, pick your interests during onboarding, and the feed loads from your own server.
+
+### 6.6 Connecting the two ends
+
+| Situation | Frontend command | Server setting (`server/.env`) |
+| :--- | :--- | :--- |
+| Both on this machine (default) | `flutter run -d chrome` | `CORS_ORIGINS=` (empty) |
+| Server somewhere else (VM, tunnel, deployed API) | `flutter run -d chrome --dart-define=API_BASE_URL=https://api.example.com` | add the app's origin, e.g. `CORS_ORIGINS=http://localhost:5000` |
+| Android emulator → server on this machine | `flutter run --dart-define=API_BASE_URL=http://10.0.2.2:8000` | — (CORS only applies to browsers) |
+| Production web build | `flutter build web --release --dart-define=API_BASE_URL=https://api.example.com` | `CORS_ORIGINS=https://your-app.vercel.app` |
+
+* `API_BASE_URL` is compiled into the app: after changing it, run `flutter run` / `flutter build` again. No trailing slash.
+* After changing `CORS_ORIGINS`, restart the API (`docker compose up -d api` in option A, restart `uvicorn` in option B).
+* Prefer `127.0.0.1` over `localhost`: `localhost` may resolve to IPv6 first, while the server listens on IPv4.
+* To smoke-test every endpoint of a running server from the command line, run `dart run bin/test_api.dart` inside `app/`.
+
+### 6.7 Run the tests
+
+Server (offline suite: no network, database or API keys needed):
+
+```bash
+cd server
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
+Frontend:
+
+```bash
+cd app
+flutter analyze
+flutter test
+```
+
+Scripts that need a running server, a database or real keys live in [`server/tests/live/`](server/tests/live/README.md) and are run by hand.
+
+### 6.8 Troubleshooting
+
+| Symptom | Fix |
+| :--- | :--- |
+| The app shows a connection error | Is the API up (`http://127.0.0.1:8000/docs`)? Does `API_BASE_URL` point to it? |
+| The browser console shows a **CORS** error | Add the app's exact origin (scheme + host + port) to `CORS_ORIGINS` and restart the API. |
+| The feed stays empty | Run the seed once (`ingest_tavily.py --seed`) and make sure the worker is running (`docker compose logs worker`). |
+| `ingest_tavily.py` stops with `INGESTION_SECRET ... missing` | Set `INGESTION_SECRET` in `server/.env`. |
+| Port `5432` or `8000` is already in use | Stop the other PostgreSQL / server on that port, or change the port mapping in `docker-compose.yml`. |
+| Summaries or tags never appear | Check `AI_API_KEY` and the worker logs; `FAST_MODEL` must be a non-thinking Instruct model. |
+
+### 6.9 Deploying
+
+To run the server on a cloud VM behind HTTPS and the web app on Vercel, follow [`docs/deployment.md`](docs/deployment.md).

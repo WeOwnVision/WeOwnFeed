@@ -97,7 +97,10 @@ server/
 
 ## 4. Accounts and access (`routers/auth.py`)
 
-- `POST /api/auth/register`, `POST /api/auth/login` → `{user, token}`; `POST /api/auth/logout`; `GET /api/auth/me`.
+- `POST /api/auth/login` → `{user, token}`: one screen for sign-in and sign-up. A new username
+  creates the account; an account from the old username-only login takes the password it is
+  given. No password rules (demo): any non-empty username (≤ 50) and password.
+  `POST /api/auth/register` (create only), `POST /api/auth/logout`, `GET /api/auth/me`.
 - Passwords: scrypt hashes (standard library). Tokens: random, 30 days; only their SHA-256 is stored (`user_sessions`).
 - The app sends `Authorization: Bearer <token>`. Every route that reads or changes a
   user's data depends on `current_user` and calls `ensure_self` (403 for another user's id).
