@@ -158,7 +158,9 @@ pointed at Nebius Token Factory (AI_BASE_URL). Model names come from server/.env
        v
   cached in PostgreSQL per cluster, shared by every user
 
-  On request only ("deep inspect" button):
+  The app's "Fact Check" button runs this (POST /api/articles/{id}/deep-inspect).
+
+  On request only ("Research deeper" button):
        Tavily Research   POST /api/articles/{id}/deep-inspect/research
                          multi-search report with sources; costly, never automatic
 
@@ -170,7 +172,7 @@ pointed at Nebius Token Factory (AI_BASE_URL). Model names come from server/.env
   Extract   short / paywalled bodies at ingestion, evidence pages
   Map       site follow and newsroom watcher (URL diff)
   Crawl     new posts of followed sites
-  Research  on-demand deep inspection
+  Research  on-demand "Research deeper" report
 
   Every call is logged to the tavily_calls table (endpoint, purpose, credits,
   latency, cache hit): GET /api/tavily/stats and GET /api/tavily/calls.

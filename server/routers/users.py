@@ -14,6 +14,8 @@ from schemas import UserPreferencesUpdate, UserInteractionRequest, SiteFollowReq
 from taxonomy import MACRO_CATEGORIES, clean_micro_tags
 from routers.deps import validate_uuid, parse_vector
 from routers.auth import current_user, ensure_self, rate_limit
+from dedup import attach_also_published
+from fact_check_status import attach_fact_check_verdicts
 from url_utils import canonicalize_url, extract_domain
 
 router = APIRouter(tags=["Users & Personalization"])
@@ -272,6 +274,7 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
                 }
                 for r in fallback_rows
             ]
+            attach_fact_check_verdicts(items)
             return {
                 "user_id": valid_user_id,
                 "is_fallback": True,
@@ -366,7 +369,11 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
                     JOIN user_watched_sites uws ON ws.id = uws.site_id
                     WHERE uws.user_id = %(user_id)s
                       AND (
-                          a.source_feed = ws.site_name
+                          EXISTS (
+                              SELECT 1 FROM site_discovered_urls sdu
+                              WHERE sdu.site_id = ws.id AND sdu.url_canonical = a.original_url
+                          )
+                          OR a.source_feed = ws.site_name
                           OR POSITION(replace(replace(replace(ws.root_url, 'https://', ''), 'http://', ''), 'www.', '') IN a.original_url) > 0
                       )
                 ) AS matched_sites,
@@ -470,7 +477,7 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
             }
             for r in ranked_rows
         ]
-
+        attach_fact_check_verdicts(items)
 
         return {
             "user_id": valid_user_id,
@@ -814,7 +821,7 @@ def _process_site_follow(site_id: str, canonical_url: str, site_name: str) -> No
         # Posts go through the normal ingest path (like run_site_watch_cycle):
         # the worker labels, summarizes and embeds them, and the date comes
         # from the post itself instead of NOW().
-        from site_watcher import _infer_article_date, guess_title
+        from site_watcher import _infer_article_date, post_title
         from routers.articles import ingest_articles
         from routers.deps import INGESTION_SECRET
         from schemas import ScrapedArticleIn
@@ -827,7 +834,7 @@ def _process_site_follow(site_id: str, canonical_url: str, site_name: str) -> No
             raw_content = r.get("raw_content", "") or ""
             if not c_url or len(raw_content) < 200 or not is_post_url(c_url, canonical_url):
                 continue
-            title = (r.get("title") or guess_title(c_url, raw_content)).strip()
+            title = post_title(r.get("title"), c_url, raw_content)
             payload.append(ScrapedArticleIn(
                 Site=extract_domain(c_url),
                 Baslik=title,
@@ -893,6 +900,74 @@ def get_user_followed_sites(user_id: str, me: str = Depends(current_user)):
             )
             for r in rows
         ]
+
+
+@router.get("/api/users/{user_id}/sites/articles")
+def get_followed_site_articles(user_id: str, limit: int = 200, me: str = Depends(current_user)):
+    """
+    Stories from the user's followed sites, newest first, each with the
+    `site_id` it came from, plus the story count per site (the Site Watch
+    page's filter chips). A story belongs to a site when Tavily Map / Crawl
+    found its address on the site (`site_discovered_urls`; posts often live
+    on another host, e.g. nvidia.com -> blogs.nvidia.com), or by the same
+    name / address rule as the personal feed's `matched_sites`. Off-topic
+    posts are kept: the user asked for this site.
+    """
+    ensure_self(user_id, me)
+    valid_user_id = validate_uuid(user_id, "user_id")
+    limit = max(1, min(limit, 300))
+    site_match = """
+        JOIN articles a ON a.is_processed = TRUE
+         AND a.duplicate_of IS NULL
+         AND (
+             EXISTS (
+                 SELECT 1 FROM site_discovered_urls sdu
+                 WHERE sdu.site_id = ws.id AND sdu.url_canonical = a.original_url
+             )
+             OR a.source_feed = ws.site_name
+             OR POSITION(replace(replace(replace(ws.root_url, 'https://', ''), 'http://', ''), 'www.', '') IN a.original_url) > 0
+         )
+    """
+    with get_db() as cur:
+        cur.execute(f"""
+            SELECT ws.id, COUNT(a.id)
+            FROM user_watched_sites uws
+            JOIN watched_sites ws ON ws.id = uws.site_id
+            {site_match}
+            WHERE uws.user_id = %s
+            GROUP BY ws.id;
+        """, (valid_user_id,))
+        counts = {str(r[0]): int(r[1]) for r in cur.fetchall()}
+
+        cur.execute(f"""
+            SELECT ws.id, ws.site_name, a.id, a.source_feed, a.title, a.original_url, a.author,
+                   a.published_at, a.macro_tag, a.macro_tags, a.micro_tags, a.tldr,
+                   a.image_url, a.image_status
+            FROM user_watched_sites uws
+            JOIN watched_sites ws ON ws.id = uws.site_id
+            {site_match}
+            WHERE uws.user_id = %s
+            ORDER BY a.published_at DESC NULLS LAST
+            LIMIT %s;
+        """, (valid_user_id, limit))
+        rows = cur.fetchall()
+
+    return {
+        "counts": counts,
+        "articles": attach_also_published(attach_fact_check_verdicts([
+            {
+                "site_id": str(r[0]),
+                "matched_sites": [r[1]],
+                "id": str(r[2]), "source": r[3], "title": r[4], "url": r[5],
+                "author": r[6], "published_at": r[7], "macro_tag": r[8],
+                "macro_tags": r[9] if r[9] else ([r[8]] if r[8] else []),
+                "micro_tags": r[10] or [], "tldr": r[11],
+                "image_url": r[12],
+                "image_status": r[13] or ("resolved" if r[12] else "gradient_fallback"),
+            }
+            for r in rows
+        ])),
+    }
 
 
 @router.post("/api/users/{user_id}/sites", response_model=SiteOut)

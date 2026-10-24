@@ -7,11 +7,13 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'package:weownfeed/models/api_models.dart';
 import 'package:weownfeed/screens/home_page.dart';
 import 'package:weownfeed/services/api_service.dart';
 import 'package:weownfeed/state/app_state.dart';
 import 'package:weownfeed/web/web_gate.dart';
 import 'package:weownfeed/web/web_shell.dart';
+import 'package:weownfeed/web/widgets/web_ui.dart';
 
 Map<String, Object?> _article(int i) => {
   'id': 'id-$i',
@@ -925,5 +927,58 @@ void main() {
     await _pumpAt(tester, const WebShell(), const Size(1440, 900));
     expect(find.textContaining('Server unavailable'), findsOneWidget);
     expect(find.text('Try again'), findsOneWidget);
+  });
+
+  testWidgets('fact check badge shows only verdicts with something to say', (
+    tester,
+  ) async {
+    Article story(String? verdict) =>
+        Article.fromJson({..._article(1), 'fact_check_verdict': ?verdict});
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Column(
+          children: [
+            FactCheckBadge(story('supported')),
+            FactCheckBadge(story('developing')),
+            FactCheckBadge(story('single_source')),
+            FactCheckBadge(story(null)),
+          ],
+        ),
+      ),
+    );
+    expect(find.text('Supported'), findsOneWidget);
+    expect(find.text('Developing'), findsOneWidget);
+    expect(find.textContaining('Unverified'), findsNothing);
+    expect(find.textContaining('Single'), findsNothing);
+  });
+
+  testWidgets('merged copies show as "Also published by"', (tester) async {
+    final story = Article.fromJson({
+      ..._article(1),
+      'also_published_by': [
+        {
+          'id': 'c1',
+          'source': 'nvidianews.nvidia.com',
+          'title': 'Copy',
+          'url': 'https://nvidianews.nvidia.com/x',
+        },
+      ],
+      'also_published_by_count': 1,
+    });
+    final single = Article.fromJson(_article(2));
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: Column(
+            children: [AlsoPublishedLine(story), AlsoPublishedLine(single)],
+          ),
+        ),
+      ),
+    );
+    expect(
+      find.text('Also published by nvidianews.nvidia.com'),
+      findsOneWidget,
+    );
+    expect(find.textContaining('Also published by'), findsOneWidget);
   });
 }

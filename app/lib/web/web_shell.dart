@@ -11,6 +11,9 @@ import 'pages/web_discover_page.dart';
 import 'pages/web_feed_page.dart';
 import 'pages/web_home_page.dart';
 import 'pages/web_profile_page.dart';
+import 'pages/web_research_page.dart';
+import 'pages/web_sites_page.dart';
+import 'widgets/article_dialog.dart';
 import 'widgets/tavily_terminal.dart';
 import 'widgets/web_ui.dart';
 
@@ -51,6 +54,20 @@ class WebShell extends StatelessWidget {
       subtitle: 'Search & explore news',
     ),
     _WebPage(
+      icon: Icons.travel_explore_outlined,
+      activeIcon: Icons.travel_explore_rounded,
+      label: 'Research',
+      title: 'Research',
+      subtitle: 'Cited reports on the stories you dug into',
+    ),
+    _WebPage(
+      icon: Icons.language_outlined,
+      activeIcon: Icons.language_rounded,
+      label: 'Site Watch',
+      title: 'Site Watch',
+      subtitle: 'Follow any newsroom or blog, even without RSS',
+    ),
+    _WebPage(
       icon: Icons.person_outline_rounded,
       activeIcon: Icons.person_rounded,
       label: 'Profile & Settings',
@@ -63,6 +80,8 @@ class WebShell extends StatelessWidget {
     AppState.navFeed => const WebFeedPage(),
     AppState.navChat => const WebChatPage(),
     AppState.navDiscover => const WebDiscoverPage(),
+    AppState.navResearch => const WebResearchPage(),
+    AppState.navSites => const WebSitesPage(),
     AppState.navProfile => const WebProfilePage(),
     _ => const WebHomePage(),
   };
@@ -231,6 +250,11 @@ class _SideNav extends StatelessWidget {
                           : _SideNavTile(
                               page: WebShell.pages[i],
                               selected: i == currentIndex,
+                              badge:
+                                  i == AppState.navResearch &&
+                                      state.researchingCount > 0
+                                  ? state.researchingCount
+                                  : null,
                               onTap: () => onTap(i),
                             ),
                     ),
@@ -251,8 +275,6 @@ class _SideNav extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(height: 12),
-          _WaiPromo(onTap: () => onTap(AppState.navChat)),
           const SizedBox(height: 16),
           _UserTile(onTap: () => onTap(AppState.navProfile)),
         ],
@@ -421,62 +443,6 @@ class _CountBadge extends StatelessWidget {
           fontSize: 11.5,
           fontWeight: FontWeight.w600,
         ),
-      ),
-    );
-  }
-}
-
-class _WaiPromo extends StatelessWidget {
-  const _WaiPromo({required this.onTap});
-
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceAlt,
-        borderRadius: BorderRadius.circular(18),
-        border: Border.all(color: AppColors.border),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              const Icon(
-                Icons.auto_awesome_rounded,
-                size: 16,
-                color: AppColors.accentLight,
-              ),
-              const SizedBox(width: 6),
-              Text(
-                'Ask WAI',
-                style: GoogleFonts.inter(
-                  color: AppColors.textPrimary,
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Simplifies any story and explains its context and opposing '
-            'views.',
-            style: GoogleFonts.inter(
-              color: AppColors.textBody,
-              fontSize: 12,
-              height: 1.45,
-            ),
-          ),
-          const SizedBox(height: 12),
-          SizedBox(
-            width: double.infinity,
-            child: WebButton(label: 'Open chat', onTap: onTap),
-          ),
-        ],
       ),
     );
   }
@@ -669,106 +635,144 @@ class _TopSearchFieldState extends State<_TopSearchField> {
   }
 }
 
+/// The bell in the top bar: notifications from this session (e.g. a
+/// finished Tavily Research). Tapping one opens its story.
 class _NotificationsButton extends StatelessWidget {
   const _NotificationsButton();
 
-  static const _items = [
-    (
-      Icons.bolt_rounded,
-      'Breaking',
-      'Central banks announced their rate decision',
-    ),
-    (Icons.headphones_outlined, 'Audio bulletin ready', "Today's brief · 2:34"),
-  ];
+  static String _ago(DateTime t) {
+    final d = DateTime.now().difference(t);
+    if (d.inMinutes < 1) return 'just now';
+    if (d.inHours < 1) return '${d.inMinutes} min ago';
+    return '${d.inHours} h ago';
+  }
 
   @override
   Widget build(BuildContext context) {
-    return PopupMenuButton<int>(
-      tooltip: 'Notifications',
-      offset: const Offset(0, 56),
-      color: AppColors.surface,
-      shape: RoundedRectangleBorder(
-        borderRadius: BorderRadius.circular(16),
-        side: const BorderSide(color: AppColors.border),
-      ),
-      itemBuilder: (context) => [
-        for (final (icon, title, body) in _items)
-          PopupMenuItem<int>(
-            height: 64,
-            child: SizedBox(
-              width: 300,
-              child: Row(
-                children: [
-                  Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: AppColors.surfaceAlt,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(icon, size: 18, color: AppColors.accentLight),
+    final state = AppState.instance;
+    return ListenableBuilder(
+      listenable: state,
+      builder: (context, _) => PopupMenuButton<int>(
+        tooltip: 'Notifications',
+        offset: const Offset(0, 56),
+        color: AppColors.surface,
+        shape: RoundedRectangleBorder(
+          borderRadius: BorderRadius.circular(16),
+          side: const BorderSide(color: AppColors.border),
+        ),
+        onOpened: state.markNotificationsRead,
+        onSelected: (i) {
+          final article = state.inbox[i].article;
+          if (article != null) showArticleDialog(context, article);
+        },
+        itemBuilder: (context) => [
+          if (state.inbox.isEmpty)
+            PopupMenuItem<int>(
+              enabled: false,
+              height: 56,
+              child: SizedBox(
+                width: 300,
+                child: Text(
+                  'No notifications yet.',
+                  style: GoogleFonts.inter(
+                    color: AppColors.textMuted,
+                    fontSize: 13,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Text(
-                          title,
-                          style: GoogleFonts.inter(
-                            color: AppColors.textPrimary,
-                            fontSize: 13.5,
-                            fontWeight: FontWeight.w600,
-                          ),
-                        ),
-                        const SizedBox(height: 2),
-                        Text(
-                          body,
-                          style: GoogleFonts.inter(
-                            color: AppColors.textMuted,
-                            fontSize: 12.5,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
+                ),
               ),
             ),
-          ),
-      ],
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          Container(
-            width: 46,
-            height: 46,
-            decoration: BoxDecoration(
-              color: AppColors.surface,
-              shape: BoxShape.circle,
-              border: Border.all(color: AppColors.border),
-            ),
-            child: const Icon(
-              Icons.notifications_none_rounded,
-              color: AppColors.iconMuted,
-              size: 22,
-            ),
-          ),
-          Positioned(
-            right: 11,
-            top: 11,
-            child: Container(
-              width: 8,
-              height: 8,
-              decoration: BoxDecoration(
-                color: AppColors.mint,
-                shape: BoxShape.circle,
-                border: Border.all(color: AppColors.surface, width: 1.5),
+          for (final (i, n) in state.inbox.indexed)
+            PopupMenuItem<int>(
+              value: i,
+              height: 64,
+              child: SizedBox(
+                width: 300,
+                child: Row(
+                  children: [
+                    Container(
+                      width: 36,
+                      height: 36,
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceAlt,
+                        shape: BoxShape.circle,
+                      ),
+                      child: Icon(
+                        n.kind == NotificationKind.research
+                            ? Icons.travel_explore_rounded
+                            : n.kind == NotificationKind.factCheck
+                            ? Icons.verified_user_rounded
+                            : Icons.error_outline_rounded,
+                        size: 18,
+                        color: n.kind != NotificationKind.error
+                            ? AppColors.accentLight
+                            : AppColors.dislike,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          Text(
+                            '${n.title} · ${_ago(n.time)}',
+                            style: GoogleFonts.inter(
+                              color: AppColors.textPrimary,
+                              fontSize: 13.5,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            n.body,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.inter(
+                              color: AppColors.textMuted,
+                              fontSize: 12.5,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
-          ),
         ],
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            Container(
+              width: 46,
+              height: 46,
+              decoration: BoxDecoration(
+                color: AppColors.surface,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppColors.border),
+              ),
+              child: const Icon(
+                Icons.notifications_none_rounded,
+                color: AppColors.iconMuted,
+                size: 22,
+              ),
+            ),
+            if (state.unreadNotifications > 0)
+              Positioned(
+                right: 11,
+                top: 11,
+                child: Container(
+                  width: 8,
+                  height: 8,
+                  decoration: BoxDecoration(
+                    color: AppColors.mint,
+                    shape: BoxShape.circle,
+                    border: Border.all(color: AppColors.surface, width: 1.5),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

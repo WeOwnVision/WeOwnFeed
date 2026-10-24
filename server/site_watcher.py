@@ -78,13 +78,29 @@ def is_post_url(url: str, root_url: str) -> bool:
     return "-" in last or any(c.isdigit() for c in last)
 
 
+# Section headings a crawled page may show above the post's own title.
+GENERIC_HEADINGS = {
+    "related stories", "related articles", "related posts", "more stories",
+    "latest news", "recent posts", "read more", "share this article",
+}
+
+
+def post_title(given: Optional[str], url: str, raw_text: str) -> str:
+    """Tavily's title when it is a real one, else [guess_title]."""
+    if given and given.strip().lower() not in GENERIC_HEADINGS:
+        return given.strip()
+    return guess_title(url, raw_text)
+
+
 def guess_title(url: str, raw_text: str) -> str:
     """Crawl and Extract results often carry no title: use the page's first
     heading, else its address ("claude-opus-5-5" -> "Claude Opus 5.5")."""
     for line in (raw_text or "").splitlines()[:40]:
         m = re.match(r"^#{1,2}\s+(.+?)\s*#*$", line.strip())
         if m and len(m.group(1)) >= 8:
-            return re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", m.group(1)).strip()
+            heading = re.sub(r"\[([^\]]+)\]\([^)]*\)", r"\1", m.group(1)).strip()
+            if heading.lower() not in GENERIC_HEADINGS:
+                return heading
     slug = re.sub(r"^https?://[^/]+", "", url).strip("/").split("/")[-1]
     slug = re.sub(r"\.\w+$", "", slug)
     slug = re.sub(r"(\d)-(?=\d)", r"\1.", slug)
@@ -328,7 +344,7 @@ def run_site_watch_cycle(max_extract_per_site: int = 3) -> tuple[int, int]:
         for r in extracted_results:
             raw_url = r.get("url", "")
             raw_text = r.get("raw_content", "")
-            title = r.get("title") or guess_title(raw_url, raw_text)
+            title = post_title(r.get("title"), raw_url, raw_text)
 
             cleaned_text = clean_article_markdown(title, raw_text)
             if not cleaned_text or len(cleaned_text) < 200:

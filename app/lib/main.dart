@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'screens/home_page.dart';
 import 'theme/app_colors.dart';
 import 'web/web_gate.dart';
+import 'web/widgets/activity_bar.dart';
 
 void main() {
   // Fonts ship with the app (assets/google_fonts). Downloading them at run
@@ -49,6 +50,10 @@ class MyApp extends StatelessWidget {
       // A separate UI per platform: a left-menu layout for the web (desktop),
       // a bottom-menu layout for the mobile apps.
       home: kIsWeb ? const WebGate() : const HomePage(),
+      // Running Fact Checks and Research show on top of every page and dialog.
+      builder: kIsWeb
+          ? (context, child) => ActivityBarHost(child: child!)
+          : null,
     );
   }
 }

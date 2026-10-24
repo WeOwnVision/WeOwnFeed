@@ -255,13 +255,14 @@ def map_evidence_to_fact_check_result(
             
     title = article.get("title", "")
     exec_synthesis = (
-        f"Deep inspection for '{title}'. Overall assessment: {fact_check_verdict.upper()}. "
+        f"Fact check for '{title}'. Overall assessment: {fact_check_verdict.upper()}. "
         f"{wire_info} "
         f"Evaluated {len(claim_matrix)} atomic assertions against Tavily live web consensus."
     )
     
     return {
         "executive_synthesis": exec_synthesis,
+        "verdict": summary_verdict,
         "fact_check_verdict": fact_check_verdict,
         "claim_matrix": claim_matrix,
         "bias_and_nuance": wire_info,
@@ -296,7 +297,7 @@ def _run_deep_inspection_sync(broadcaster: InspectionBroadcaster, art_id: str, a
         broadcaster.broadcast("final", json.dumps(fact_check))
     except Exception as e:
         logger.error("[Deep Inspect] Pipeline error for article %s: %s", art_id, e, exc_info=True)
-        broadcaster.broadcast("error", json.dumps({"message": f"Deep inspection error: {str(e)}"}))
+        broadcaster.broadcast("error", json.dumps({"message": f"Fact check error: {str(e)}"}))
     finally:
         broadcaster.finish()
 
@@ -1280,6 +1281,14 @@ def _normalize_research_sources(raw_sources: Any) -> List[Dict[str, str]]:
     return sources
 
 
+def _research_is_stale(entry: Dict[str, Any], max_age_seconds: int = 600) -> bool:
+    try:
+        started = datetime.fromisoformat(str(entry.get("updated_at")))
+    except ValueError:
+        return True
+    return (datetime.now(timezone.utc) - started).total_seconds() > max_age_seconds
+
+
 @router.post("/api/articles/{article_id}/deep-inspect/research")
 def execute_article_research(article_id: str, me: str = Depends(current_user)):
     """
@@ -1311,6 +1320,19 @@ def execute_article_research(article_id: str, me: str = Depends(current_user)):
             "sources": existing_research.get("sources") or [],
             "cached": True,
             "credits": 0.0
+        }
+
+    # A job is already running (e.g. started from another tab): never start
+    # a second one; the client polls the GET endpoint. After 10 minutes the
+    # job counts as lost and may be started again.
+    if existing_research and existing_research.get("status") == "running" \
+            and not _research_is_stale(existing_research):
+        return {
+            "status": "running",
+            "report": None,
+            "sources": [],
+            "cached": False,
+            "credits": None
         }
 
     # Formulate question from title and core claims

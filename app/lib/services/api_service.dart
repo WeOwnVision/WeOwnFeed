@@ -147,6 +147,7 @@ class ApiService {
       query: result.query,
       direct: result.direct.where(shown).toList(),
       explore: result.explore.where(shown).toList(),
+      semantic: result.semantic,
     );
   }
 
@@ -263,6 +264,14 @@ class ApiService {
       'url': url.trim(),
     });
     return FollowedSite.fromJson(_map(json));
+  }
+
+  /// Stories from the followed sites and the count per site.
+  Future<SiteStories> getSiteStories(String userId) async {
+    final json = await _getJson(
+      _uri('/api/users/${_id(userId)}/sites/articles'),
+    );
+    return SiteStories.fromJson(_map(json));
   }
 
   Future<void> removeSite(String userId, String siteId) async {
@@ -607,7 +616,7 @@ class ApiService {
     return ArticleResearch.fromJson(_map(json));
   }
 
-  /// Deep Inspect: live verification stream with Tavily Search + Extract (SSE).
+  /// Fact Check (server: deep inspect): live verification stream with Tavily Search + Extract (SSE).
   Stream<DeepInspectEvent> deepInspectStream(String articleId) async* {
     final uri = _uri('/api/articles/${_id(articleId)}/deep-inspect');
     final req = http.Request('POST', uri)..headers.addAll(_headers);

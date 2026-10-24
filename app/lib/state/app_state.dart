@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -38,7 +39,9 @@ class AppState extends ChangeNotifier {
   static const navFeed = 1;
   static const navChat = 2;
   static const navDiscover = 3;
-  static const navProfile = 4;
+  static const navResearch = 4;
+  static const navSites = 5;
+  static const navProfile = 6;
 
   int navIndex = navHome;
 
@@ -56,6 +59,7 @@ class AppState extends ChangeNotifier {
   static const _kSaved = 'saved_ids';
   static const _kLiked = 'liked_ids';
   static const _kRead = 'read_ids';
+  static const _kResearched = 'researched_ids';
 
   /// Prefix of temporary users created while the server is unreachable.
   static const _localPrefix = 'local-';
@@ -166,10 +170,18 @@ class AppState extends ChangeNotifier {
     interestSummary = null;
     follows = const [];
     _setSites(const []);
+    siteStories = const SiteStories();
     saved.clear();
     liked.clear();
     read.clear();
     _disliked.clear();
+    researched.clear();
+    _research.clear();
+    _researching.clear();
+    _tasks.clear();
+    _researchErrors.clear();
+    inbox.clear();
+    unreadNotifications = 0;
     _clearFeed();
     _resetOnboarding();
     notifyListeners();
@@ -305,8 +317,34 @@ class AppState extends ChangeNotifier {
   bool addingSite = false;
   Timer? _sitePoll;
 
+  /// Stories from the followed sites (the Sites page).
+  SiteStories siteStories = const SiteStories();
+  bool siteStoriesLoading = false;
+
+  /// `GET /api/users/{id}/sites/articles`.
+  Future<void> loadSiteStories() async {
+    final current = user;
+    if (current == null || !hasServerUser) return;
+    siteStoriesLoading = true;
+    notifyListeners();
+    try {
+      final result = await api.getSiteStories(current.id);
+      if (user?.id != current.id) return;
+      _remember(result.articles.map((e) => e.$2));
+      siteStories = result;
+    } on ApiException {
+      // The page keeps the last list.
+    } finally {
+      siteStoriesLoading = false;
+      notifyListeners();
+    }
+  }
+
   void _setSites(List<FollowedSite> list) {
+    final wasWorking = sites.any((s) => s.isWorking);
     sites = list;
+    // A scan just finished: its posts are in the database now.
+    if (wasWorking && !list.any((s) => s.isWorking)) loadSiteStories();
     // Refresh the status every 3 s while a scan runs; stop when it is done.
     if (list.any((s) => s.isWorking)) {
       _sitePoll ??= Timer.periodic(
@@ -1184,6 +1222,9 @@ class AppState extends ChangeNotifier {
     read
       ..clear()
       ..addAll(_readIds(_kRead));
+    researched
+      ..clear()
+      ..addAll(_readIds(_kResearched));
   }
 
   List<String> _readIds(String base) {
@@ -1408,6 +1449,249 @@ class AppState extends ChangeNotifier {
   }
 
   // -------------------------------------------------------------------------
+  // Fact Check badges
+  // -------------------------------------------------------------------------
+  /// Results of Fact Checks run in this session, so every card of the story
+  /// shows the badge at once (lists loaded earlier do not have it yet).
+  final Map<String, String> _factChecks = {};
+
+  String? factCheckFor(Article a) => _factChecks[a.id] ?? a.factCheckVerdict;
+
+  void setFactCheck(String articleId, String code) {
+    if (_factChecks[articleId] == code) return;
+    _factChecks[articleId] = code;
+    notifyListeners();
+  }
+
+  // -------------------------------------------------------------------------
+  // Running Fact Checks and Research (the activity bar on top of the page)
+  // -------------------------------------------------------------------------
+  final Map<String, RunningTask> _tasks = {};
+
+  /// Oldest first.
+  List<RunningTask> get runningTasks => _tasks.values.toList();
+
+  void _startTask(TaskKind kind, Article article) {
+    _tasks.putIfAbsent(
+      '${kind.name}:${article.id}',
+      () => RunningTask(kind: kind, article: article),
+    );
+  }
+
+  void _endTask(TaskKind kind, String articleId) =>
+      _tasks.remove('${kind.name}:$articleId');
+
+  // Fact Check: runs here, not in the story's dialog, so it keeps going
+  // when the dialog closes.
+  final Map<String, FactCheckResult> _factCheckResults = {};
+  final Map<String, String> _factCheckErrors = {};
+
+  bool isFactChecking(String articleId) =>
+      _tasks.containsKey('${TaskKind.factCheck.name}:$articleId');
+
+  /// The step the server is on ("Querying Tavily…").
+  String? factCheckStep(String articleId) =>
+      _tasks['${TaskKind.factCheck.name}:$articleId']?.step;
+
+  FactCheckResult? factCheckResult(String articleId) =>
+      _factCheckResults[articleId];
+
+  String? factCheckError(String articleId) => _factCheckErrors[articleId];
+
+  /// Streams the server's Fact Check (`deep-inspect`, SSE): status steps,
+  /// then the result.
+  Future<void> startFactCheck(Article article) async {
+    if (isFactChecking(article.id)) return;
+    _startTask(TaskKind.factCheck, article);
+    _factCheckErrors.remove(article.id);
+    notifyListeners();
+    String? error;
+    try {
+      await for (final event in api.deepInspectStream(article.id)) {
+        if (event.event == 'status') {
+          _tasks['${TaskKind.factCheck.name}:${article.id}']?.step = event.data;
+          notifyListeners();
+        } else if (event.event == 'final') {
+          final json = jsonDecode(event.data);
+          if (json is Map<String, dynamic>) {
+            final result = FactCheckResult.fromJson(json);
+            _factCheckResults[article.id] = result;
+            _factChecks[article.id] = factCheckCode(result.factCheckVerdict);
+            _notify(
+              AppNotification(
+                kind: NotificationKind.factCheck,
+                title: 'Fact Check done',
+                body: article.title,
+                article: article,
+              ),
+            );
+          }
+        } else if (event.event == 'error') {
+          error = event.data;
+          try {
+            final errJson = jsonDecode(event.data);
+            if (errJson is Map && errJson['message'] != null) {
+              error = errJson['message'].toString();
+            }
+          } on FormatException {
+            // Plain text message.
+          }
+        }
+      }
+    } on ApiException catch (e) {
+      error = e.userMessage;
+    } catch (e) {
+      error = e.toString();
+    }
+    if (error != null) _factCheckErrors[article.id] = error;
+    _endTask(TaskKind.factCheck, article.id);
+    notifyListeners();
+  }
+
+  // -------------------------------------------------------------------------
+  // Tavily Research (runs in the background, a notification says when done)
+  // -------------------------------------------------------------------------
+  final Map<String, ArticleResearch> _research = {};
+  final Set<String> _researching = {};
+
+  /// Stories the user started Research on, for the Research page. Kept per
+  /// user on the device, like saved stories.
+  final Set<String> researched = {};
+
+  /// Most recent first.
+  List<String> get researchedIds => researched.toList().reversed.toList();
+  final Map<String, String> _researchErrors = {};
+
+  /// The story's finished report, if there is one.
+  ArticleResearch? researchFor(String articleId) {
+    final r = _research[articleId];
+    return r != null && r.isCompleted ? r : null;
+  }
+
+  /// `true` from the tap until the report is ready, even while the story's
+  /// dialog is closed.
+  bool isResearching(String articleId) => _researching.contains(articleId);
+
+  /// Jobs still running (the menu's Research badge).
+  int get researchingCount => _researching.length;
+
+  String? researchError(String articleId) => _researchErrors[articleId];
+
+  /// Shows a saved report, or resumes watching a job started earlier (spends
+  /// no credits).
+  Future<void> loadResearch(Article article) async {
+    if (_research.containsKey(article.id) || isResearching(article.id)) return;
+    try {
+      final r = await api.getResearch(article.id);
+      if (r.status == 'none') return;
+      _research[article.id] = r;
+      if (r.isRunning) {
+        _watchResearch(article);
+      } else {
+        notifyListeners();
+      }
+    } on ApiException {
+      // Without a report the button shows.
+    }
+  }
+
+  /// Starts Tavily Research. The server may hold the request for ~25 s; the
+  /// spinner shows from the tap, and [_watchResearch] keeps polling after.
+  Future<void> startResearch(Article article) async {
+    if (isResearching(article.id)) return;
+    _remember([article]);
+    researched
+      ..remove(article.id)
+      ..add(article.id);
+    _persistIds(_kResearched, researched);
+    _researching.add(article.id);
+    _startTask(TaskKind.research, article);
+    _researchErrors.remove(article.id);
+    notifyListeners();
+    try {
+      final r = await api.startResearch(article.id);
+      _research[article.id] = r;
+      if (r.isRunning) {
+        await _watchResearch(article);
+      } else {
+        _finishResearch(article, r);
+      }
+    } on ApiException catch (e) {
+      _researching.remove(article.id);
+      _endTask(TaskKind.research, article.id);
+      _researchErrors[article.id] = e.userMessage;
+      notifyListeners();
+    }
+  }
+
+  /// Polls every 5 s (at most 3 min); each poll asks Tavily for the job
+  /// status and spends no credits.
+  Future<void> _watchResearch(Article article) async {
+    _researching.add(article.id);
+    _startTask(TaskKind.research, article);
+    notifyListeners();
+    for (var tries = 0; tries < 36; tries++) {
+      await Future<void>.delayed(const Duration(seconds: 5));
+      if (user == null) return;
+      try {
+        final r = await api.getResearch(article.id);
+        if (!r.isRunning) {
+          _finishResearch(article, r);
+          return;
+        }
+      } on ApiException {
+        // Asked again on the next try.
+      }
+    }
+    _finishResearch(article, null);
+  }
+
+  void _finishResearch(Article article, ArticleResearch? r) {
+    _researching.remove(article.id);
+    _endTask(TaskKind.research, article.id);
+    if (r != null && r.isCompleted) {
+      _research[article.id] = r;
+      _notify(
+        AppNotification(
+          kind: NotificationKind.research,
+          title: 'Research ready',
+          body: article.title,
+          article: article,
+        ),
+      );
+    } else {
+      _research.remove(article.id);
+      _researchErrors[article.id] = 'Tavily Research could not finish.';
+      _notify(
+        AppNotification(
+          kind: NotificationKind.error,
+          title: 'Research could not finish',
+          body: article.title,
+          article: article,
+        ),
+      );
+    }
+    notifyListeners();
+  }
+
+  // -------------------------------------------------------------------------
+  // Notifications (top bar bell, this session only)
+  // -------------------------------------------------------------------------
+  final List<AppNotification> inbox = [];
+  int unreadNotifications = 0;
+
+  void _notify(AppNotification n) {
+    inbox.insert(0, n);
+    unreadNotifications++;
+  }
+
+  void markNotificationsRead() {
+    if (unreadNotifications == 0) return;
+    unreadNotifications = 0;
+    notifyListeners();
+  }
+
+  // -------------------------------------------------------------------------
   // Settings (this session only)
   // -------------------------------------------------------------------------
   ThemeChoice theme = ThemeChoice.dark;
@@ -1450,6 +1734,44 @@ enum ThemeChoice { light, dark, system }
 enum OnboardingStep { pick, taste, reveal }
 
 enum ChatRole { user, assistant }
+
+enum NotificationKind { research, factCheck, error }
+
+enum TaskKind { factCheck, research }
+
+/// A Fact Check or Research in progress, shown in the activity bar.
+class RunningTask {
+  RunningTask({required this.kind, required this.article})
+    : started = DateTime.now();
+
+  final TaskKind kind;
+  final Article article;
+  final DateTime started;
+
+  /// The server's current step, if it reports one (Fact Check).
+  String? step;
+
+  /// Typical length: the bar fills toward it, then keeps moving.
+  Duration get expected => kind == TaskKind.factCheck
+      ? const Duration(seconds: 30)
+      : const Duration(seconds: 60);
+}
+
+/// An entry in the top bar's notifications menu; tapping it opens [article].
+class AppNotification {
+  AppNotification({
+    required this.kind,
+    required this.title,
+    required this.body,
+    this.article,
+  }) : time = DateTime.now();
+
+  final NotificationKind kind;
+  final String title;
+  final String body;
+  final Article? article;
+  final DateTime time;
+}
 
 /// The scope of a WAI chat: a story, the home page latest developments, or
 /// an area picked in the WAI tab.

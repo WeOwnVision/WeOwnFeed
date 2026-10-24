@@ -428,6 +428,10 @@ class _NewsSwipeCard extends StatelessWidget {
                         ),
                       ),
                       const Spacer(),
+                      if (news.hasAlsoPublished) ...[
+                        AlsoPublishedLine(news),
+                        const SizedBox(height: 12),
+                      ],
                       Row(
                         children: [
                           const Icon(
@@ -446,14 +450,10 @@ class _NewsSwipeCard extends StatelessWidget {
                             ),
                           ),
                           const Spacer(),
-                          const Icon(
-                            Icons.verified_outlined,
-                            size: 16,
-                            color: AppColors.mint,
-                          ),
-                          const SizedBox(width: 6),
+                          FactCheckBadge(news),
+                          const SizedBox(width: 10),
                           Text(
-                            'Verified by ${news.source}',
+                            news.source,
                             style: GoogleFonts.inter(
                               color: AppColors.textBody,
                               fontSize: 13,

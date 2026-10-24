@@ -87,12 +87,33 @@ class _WebDiscoverPageState extends State<WebDiscoverPage> {
       final r = await _state.api.searchGrouped(q);
       if (!mounted || seq != _searchSeq) return;
       setState(() => _results = r);
+      // Text matches came first; the meaning matches follow once the
+      // server has the query's embedding (it keeps computing it).
+      if (!r.semantic) _refineLater(q, seq);
     } on ApiException catch (e) {
       if (!mounted || seq != _searchSeq) return;
       setState(() => _searchError = e);
     } finally {
       if (mounted && seq == _searchSeq) setState(() => _searching = false);
     }
+  }
+
+  /// Asks again after 3, 6 and 10 s until the meaning matches are in; each
+  /// repeat is cheap (text search plus a cached embedding once it is ready).
+  void _refineLater(String q, int seq, {int attempt = 0}) {
+    const delays = [3, 3, 4];
+    if (attempt >= delays.length) return;
+    Timer(Duration(seconds: delays[attempt]), () async {
+      if (!mounted || seq != _searchSeq || q != _query) return;
+      try {
+        final r = await _state.api.searchGrouped(q);
+        if (!mounted || seq != _searchSeq) return;
+        setState(() => _results = r);
+        if (!r.semantic) _refineLater(q, seq, attempt: attempt + 1);
+      } on ApiException {
+        // The text matches stay on screen.
+      }
+    });
   }
 
   Future<void> _selectTag(String? tag) async {

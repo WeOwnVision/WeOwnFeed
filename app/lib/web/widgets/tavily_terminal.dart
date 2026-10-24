@@ -50,6 +50,11 @@ class TavilyTerminal extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Opens the panel (e.g. from a story's running Research).
+  void show() {
+    if (!open) toggle();
+  }
+
   /// Counters under the panel: calls per endpoint among the loaded rows.
   Map<String, int> get counts => {
     for (final e in endpoints) e: calls.where((c) => c.endpoint == e).length,

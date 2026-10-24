@@ -32,6 +32,7 @@ class Article {
     this.imageUrl,
     this.imageStatus,
     this.factCheckCache,
+    this.factCheckVerdict,
     this.alsoPublishedBy = const [],
     this.alsoPublishedByCount = 0,
   });
@@ -67,18 +68,24 @@ class Article {
                     Map<String, dynamic>.from(json['fact_check_cache'] as Map),
                   )
                 : null),
+      factCheckVerdict: json['fact_check_verdict'] as String?,
       alsoPublishedBy: json['also_published_by'] is List
           ? (json['also_published_by'] as List)
-              .whereType<Map<String, dynamic>>()
-              .map(AlsoPublishedBy.fromJson)
-              .toList()
+                .whereType<Map<String, dynamic>>()
+                .map(AlsoPublishedBy.fromJson)
+                .toList()
           : (json['also_published_by'] is List
-              ? (json['also_published_by'] as List)
-                  .whereType<Map>()
-                  .map((m) => AlsoPublishedBy.fromJson(Map<String, dynamic>.from(m)))
-                  .toList()
-              : const <AlsoPublishedBy>[]),
-      alsoPublishedByCount: (json['also_published_by_count'] as num?)?.toInt() ?? 0,
+                ? (json['also_published_by'] as List)
+                      .whereType<Map>()
+                      .map(
+                        (m) => AlsoPublishedBy.fromJson(
+                          Map<String, dynamic>.from(m),
+                        ),
+                      )
+                      .toList()
+                : const <AlsoPublishedBy>[]),
+      alsoPublishedByCount:
+          (json['also_published_by_count'] as num?)?.toInt() ?? 0,
     );
   }
 
@@ -117,6 +124,10 @@ class Article {
   /// Cache of the Tavily & Nemotron deep verification / fact check.
   final FactCheckResult? factCheckCache;
 
+  /// Saved Fact Check result as a code (see [factCheckCode]); null if the
+  /// story was never fact-checked.
+  final String? factCheckVerdict;
+
   /// Sibling duplicate articles covering the same breaking story.
   final List<AlsoPublishedBy> alsoPublishedBy;
 
@@ -141,11 +152,24 @@ class Article {
     if (matchedSites.isNotEmpty) 'matched_sites': matchedSites,
     if (imageUrl != null) 'image_url': imageUrl,
     if (imageStatus != null) 'image_status': imageStatus,
+    if (factCheckVerdict != null) 'fact_check_verdict': factCheckVerdict,
     if (alsoPublishedBy.isNotEmpty)
       'also_published_by': alsoPublishedBy.map((e) => e.toJson()).toList(),
     if (alsoPublishedByCount > 0)
       'also_published_by_count': alsoPublishedByCount,
   };
+}
+
+/// Fact Check result code from its display text (same rule as the server's
+/// `fact_check_status.verdict_code`): supported, disputed, contradicted,
+/// developing or single_source.
+String factCheckCode(String verdictText) {
+  final t = verdictText.toLowerCase();
+  if (t.startsWith('contradicted')) return 'contradicted';
+  if (t.startsWith('partially') || t.contains('disputed')) return 'disputed';
+  if (t.startsWith('verified')) return 'supported';
+  if (t.contains('breaking') || t.contains('fresh')) return 'developing';
+  return 'single_source';
 }
 
 /// Sibling coverage item representing an alternative outlet that published on the same event.
@@ -158,13 +182,14 @@ class AlsoPublishedBy {
     this.publishedAt,
   });
 
-  factory AlsoPublishedBy.fromJson(Map<String, dynamic> json) => AlsoPublishedBy(
+  factory AlsoPublishedBy.fromJson(
+    Map<String, dynamic> json,
+  ) => AlsoPublishedBy(
     id: (json['id'] as String?) ?? '',
     source:
         (json['source'] as String?) ?? (json['source_feed'] as String?) ?? '',
     title: (json['title'] as String?) ?? '',
-    url:
-        (json['url'] as String?) ?? (json['original_url'] as String?) ?? '',
+    url: (json['url'] as String?) ?? (json['original_url'] as String?) ?? '',
     publishedAt: _date(json['published_at']),
   );
 
@@ -304,6 +329,7 @@ class GroupedSearch {
     required this.query,
     required this.direct,
     required this.explore,
+    this.semantic = true,
   });
 
   factory GroupedSearch.fromJson(Map<String, dynamic> json) {
@@ -317,6 +343,7 @@ class GroupedSearch {
       query: (json['query'] as String?) ?? '',
       direct: hits(json['direct']),
       explore: hits(json['explore']),
+      semantic: json['semantic'] as bool? ?? true,
     );
   }
 
@@ -325,6 +352,10 @@ class GroupedSearch {
   final String query;
   final List<SearchHit> direct;
   final List<SearchHit> explore;
+
+  /// False when the server answered from text and tags only because the
+  /// query's embedding was slow; a repeat shortly after adds meaning matches.
+  final bool semantic;
 
   bool get isEmpty => direct.isEmpty && explore.isEmpty;
 }
@@ -826,4 +857,35 @@ class FollowedSite {
   /// The server is still scanning the site (Map, then Crawl).
   bool get isWorking =>
       status == 'pending' || status == 'mapping' || status == 'crawling';
+}
+
+/// `/api/users/{id}/sites/articles`: stories from the followed sites (newest
+/// first), each with the site it came from, and the story count per site.
+class SiteStories {
+  const SiteStories({this.counts = const {}, this.articles = const []});
+
+  factory SiteStories.fromJson(Map<String, dynamic> json) {
+    final counts = <String, int>{};
+    final rawCounts = json['counts'];
+    if (rawCounts is Map) {
+      rawCounts.forEach((k, v) {
+        if (v is num) counts['$k'] = v.toInt();
+      });
+    }
+    final articles = <(String, Article)>[];
+    final rawArticles = json['articles'];
+    if (rawArticles is List) {
+      for (final item in rawArticles.whereType<Map>()) {
+        final m = Map<String, dynamic>.from(item);
+        articles.add(((m['site_id'] as String?) ?? '', Article.fromJson(m)));
+      }
+    }
+    return SiteStories(counts: counts, articles: articles);
+  }
+
+  /// Site id → number of stories.
+  final Map<String, int> counts;
+
+  /// (site id, story).
+  final List<(String, Article)> articles;
 }

@@ -39,4 +39,9 @@ class AppColors {
   static const supported = Color(0xFF7FA889);
   static const contested = Color(0xFFC99A3E);
   static const unverified = Color(0xFF8A857D);
+  static const developing = Color(0xFF8AA4C2);
+
+  /// Contradicted: the one evidence state in the brand red, because outside
+  /// sources say otherwise.
+  static const contradicted = accentLight;
 }

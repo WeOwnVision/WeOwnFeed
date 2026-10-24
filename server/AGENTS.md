@@ -63,7 +63,7 @@ server/
 │   ├── follows.py           # "+" follows (company, product, person), max 3 per user
 │   ├── latest.py            # Home "Latest developments" card, cached per user
 │   ├── wai.py               # WAI chats: story / latest / area scopes, SSE replies
-│   ├── intelligence.py      # Article chat & ask, deep inspect, synthesis, daily digest, evidence, Tavily ops
+│   ├── intelligence.py      # Article chat & ask, Fact Check (deep inspect), synthesis, daily digest, evidence, Tavily ops
 │   ├── comments.py          # Taxonomy endpoint and paragraph comments
 │   └── ingestion.py         # Tavily credits per key and the ingestion schedule
 ├── worker.py                # Enrichment daemon (FOR UPDATE SKIP LOCKED, NANO_CONCURRENCY in parallel)
@@ -106,7 +106,7 @@ server/
   user's data depends on `current_user` and calls `ensure_self` (403 for another user's id).
 - Routes that spend credits require sign-in and have per-user hourly limits
   (`rate_limit`, in memory — the API runs as one process): Research 5, site follow 5,
-  "+" follow 10, deep inspect / synthesis / evidence 20. Sign-in: 10 tries per
+  "+" follow 10, Fact Check (deep inspect) / synthesis / evidence 20. Sign-in: 10 tries per
   15 min per IP + username; sign-up: 20 per hour per IP.
 - Operator-only routes (`POST /api/tavily/research`, `GET /api/tavily/research/{id}`,
   `POST /api/tavily/site-watch`) need the `X-Secret: <INGESTION_SECRET>` header.

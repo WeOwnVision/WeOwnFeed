@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -14,6 +13,7 @@ import '../../widgets/common.dart';
 import '../../widgets/simple_markdown.dart';
 import '../../widgets/smooth_scroll.dart';
 import '../../widgets/state_views.dart';
+import 'tavily_terminal.dart';
 import 'web_ui.dart';
 
 /// Story details dialog: full text, source link and comments.
@@ -48,90 +48,25 @@ class _ArticleDialogState extends State<_ArticleDialog> {
   String _selection = '';
   bool _posting = false;
 
-  bool _inspecting = false;
-  String? _inspectProgress;
-  FactCheckResult? _factCheck;
-  String? _inspectError;
+  /// Fact Check runs in [AppState] (it keeps going when this dialog closes);
+  /// [_savedFactCheck] is the result the story came with.
+  FactCheckResult? _savedFactCheck;
+  bool get _inspecting => _state.isFactChecking(widget.article.id);
+  String? get _inspectProgress => _state.factCheckStep(widget.article.id);
+  String? get _inspectError => _state.factCheckError(widget.article.id);
+  FactCheckResult? get _factCheck =>
+      _state.factCheckResult(widget.article.id) ?? _savedFactCheck;
   bool _asking = false;
   final List<Map<String, String>> _qaHistory = [];
-
-  /// Tavily Research (below the evidence card, on request).
-  ArticleResearch? _research;
-  bool _researching = false;
-  String? _researchError;
-  Timer? _researchPoll;
 
   @override
   void initState() {
     super.initState();
-    _factCheck = widget.article.factCheckCache;
+    _savedFactCheck = widget.article.factCheckCache;
+    _rememberFactCheck();
     _loadDetail();
     _loadComments();
-    _loadResearch();
-  }
-
-  /// Shows the saved Research report if there is one (spends no credits).
-  Future<void> _loadResearch() async {
-    try {
-      final r = await _state.api.getResearch(widget.article.id);
-      if (!mounted || r.status == 'none') return;
-      setState(() => _research = r);
-      if (r.isRunning) _pollResearch();
-    } on ApiException {
-      // Without a report the button shows.
-    }
-  }
-
-  Future<void> _startResearch() async {
-    if (_researching) return;
-    setState(() {
-      _researching = true;
-      _researchError = null;
-    });
-    try {
-      final r = await _state.api.startResearch(widget.article.id);
-      if (!mounted) return;
-      setState(() => _research = r);
-      if (r.isRunning) {
-        _pollResearch();
-      } else if (!r.isCompleted) {
-        setState(() => _researchError = 'Tavily Research could not finish.');
-      }
-    } on ApiException catch (e) {
-      if (mounted) setState(() => _researchError = e.userMessage);
-    } finally {
-      if (mounted && !(_research?.isRunning ?? false)) {
-        setState(() => _researching = false);
-      }
-    }
-  }
-
-  /// If the server could not finish the report within 25 s, poll every 5 s
-  /// (at most 3 min); each poll asks Tavily for the job status and spends no
-  /// credits.
-  void _pollResearch() {
-    _researchPoll?.cancel();
-    var tries = 0;
-    _researching = true;
-    _researchPoll = Timer.periodic(const Duration(seconds: 5), (t) async {
-      tries++;
-      try {
-        final r = await _state.api.getResearch(widget.article.id);
-        if (!mounted) return t.cancel();
-        if (!r.isRunning || tries >= 36) {
-          t.cancel();
-          setState(() {
-            _research = r;
-            _researching = false;
-            if (!r.isCompleted) {
-              _researchError = 'Tavily Research could not finish.';
-            }
-          });
-        }
-      } on ApiException {
-        // Bir sonraki denemede tekrar sorulur.
-      }
-    });
+    _state.loadResearch(widget.article);
   }
 
   @override
@@ -139,14 +74,14 @@ class _ArticleDialogState extends State<_ArticleDialog> {
     _commentCtrl.dispose();
     _scroll.dispose();
     _askCtrl.dispose();
-    _researchPoll?.cancel();
     super.dispose();
   }
 
   void _loadDetail() {
     _detail = _state.loadDetail(widget.article.id).then((art) {
       if (mounted && art.factCheckCache != null && _factCheck == null) {
-        setState(() => _factCheck = art.factCheckCache);
+        setState(() => _savedFactCheck = art.factCheckCache);
+        _rememberFactCheck();
       }
       return art;
     });
@@ -191,55 +126,20 @@ class _ArticleDialogState extends State<_ArticleDialog> {
     }
   }
 
-  Future<void> _startDeepInspect() async {
-    if (_inspecting) return;
-    setState(() {
-      _inspecting = true;
-      _inspectError = null;
-      _inspectProgress = 'Initializing Deep Inspect...';
-    });
-
-    try {
-      await for (final event in _state.api.deepInspectStream(
+  /// Every card of this story shows the result's badge. After the frame:
+  /// it redraws other widgets, which must not happen during a build.
+  void _rememberFactCheck() {
+    final fc = _factCheck;
+    if (fc == null) return;
+    WidgetsBinding.instance.addPostFrameCallback(
+      (_) => _state.setFactCheck(
         widget.article.id,
-      )) {
-        if (!mounted) return;
-        if (event.event == 'status') {
-          setState(() => _inspectProgress = event.data);
-        } else if (event.event == 'final') {
-          final json = jsonDecode(event.data);
-          if (json is Map<String, dynamic>) {
-            setState(() {
-              _factCheck = FactCheckResult.fromJson(json);
-              _inspecting = false;
-              _inspectProgress = null;
-            });
-          }
-        } else if (event.event == 'error') {
-          String errMsg = event.data;
-          try {
-            final errJson = jsonDecode(event.data);
-            if (errJson is Map && errJson['message'] != null) {
-              errMsg = errJson['message'].toString();
-            }
-          } catch (_) {}
-          setState(() {
-            _inspectError = errMsg;
-            _inspecting = false;
-            _inspectProgress = null;
-          });
-        }
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          _inspectError = e.toString();
-          _inspecting = false;
-          _inspectProgress = null;
-        });
-      }
-    }
+        factCheckCode(fc.factCheckVerdict),
+      ),
+    );
   }
+
+  void _startDeepInspect() => _state.startFactCheck(widget.article);
 
   Future<void> _askArticleQuestion() async {
     final q = _askCtrl.text.trim();
@@ -314,6 +214,10 @@ class _ArticleDialogState extends State<_ArticleDialog> {
                               const SizedBox(height: 20),
                               _tldr((detail ?? a).tldr!),
                             ],
+                            if ((detail ?? a).hasAlsoPublished) ...[
+                              const SizedBox(height: 16),
+                              _alsoReportedBy(detail ?? a),
+                            ],
                             const SizedBox(height: 22),
                             if (snap.hasError)
                               ErrorView(
@@ -330,12 +234,20 @@ class _ArticleDialogState extends State<_ArticleDialog> {
                               _body(detail),
                             const SizedBox(height: 26),
                             _actions(detail ?? a),
-                            if (_inspecting ||
-                                _factCheck != null ||
-                                _inspectError != null) ...[
-                              const SizedBox(height: 24),
-                              _deepInspectCard(detail ?? a),
-                            ],
+                            ListenableBuilder(
+                              listenable: _state,
+                              builder: (context, _) =>
+                                  _inspecting ||
+                                      _factCheck != null ||
+                                      _inspectError != null
+                                  ? Padding(
+                                      padding: const EdgeInsets.only(top: 24),
+                                      child: _deepInspectCard(detail ?? a),
+                                    )
+                                  : const SizedBox.shrink(),
+                            ),
+                            const SizedBox(height: 24),
+                            _researchCard(),
                             const SizedBox(height: 32),
                             const Divider(color: AppColors.border),
                             const SizedBox(height: 20),
@@ -380,8 +292,8 @@ class _ArticleDialogState extends State<_ArticleDialog> {
     ];
     return Row(
       children: [
-        const Icon(Icons.verified_rounded, size: 16, color: AppColors.mint),
-        const SizedBox(width: 6),
+        FactCheckBadge(a),
+        const SizedBox(width: 10),
         Expanded(
           child: Text(
             parts.join(' · '),
@@ -392,6 +304,56 @@ class _ArticleDialogState extends State<_ArticleDialog> {
             ),
           ),
         ),
+      ],
+    );
+  }
+
+  /// Other outlets that ran this story; their copies were merged into it.
+  Widget _alsoReportedBy(Article a) {
+    final others = [
+      for (final o in a.alsoPublishedBy)
+        if (o.source.isNotEmpty && o.source != a.source) o,
+    ];
+    final more = a.alsoPublishedByCount - others.length;
+    return Wrap(
+      spacing: 8,
+      runSpacing: 8,
+      crossAxisAlignment: WrapCrossAlignment.center,
+      children: [
+        Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(Icons.layers_outlined, size: 16, color: AppColors.mint),
+            const SizedBox(width: 6),
+            Text(
+              'Also reported by',
+              style: GoogleFonts.inter(
+                color: AppColors.mint,
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+        for (final o in others)
+          ActionChip(
+            label: Text(
+              o.source,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                color: AppColors.textPrimary,
+              ),
+            ),
+            tooltip: o.title,
+            backgroundColor: AppColors.surface,
+            side: const BorderSide(color: AppColors.border),
+            onPressed: o.url.isEmpty ? null : () => _openOriginal(o.url),
+          ),
+        if (more > 0)
+          Text(
+            '+$more more',
+            style: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 12),
+          ),
       ],
     );
   }
@@ -410,7 +372,7 @@ class _ArticleDialogState extends State<_ArticleDialog> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const OverlineLabel('TL;DR', color: AppColors.accentLight),
+          const OverlineLabel('In short', color: AppColors.accentLight),
           const SizedBox(height: 8),
           Text(
             text,
@@ -483,8 +445,8 @@ class _ArticleDialogState extends State<_ArticleDialog> {
         children: [
           WebButton(
             label: _factCheck != null
-                ? 'Grounded Fact-Check'
-                : (_inspecting ? 'Inspecting...' : 'Deep Inspect'),
+                ? 'Fact checked'
+                : (_inspecting ? 'Checking facts...' : 'Fact Check'),
             icon: Icons.verified_user_rounded,
             primary: _factCheck != null,
             onTap: () {
@@ -556,7 +518,7 @@ class _ArticleDialogState extends State<_ArticleDialog> {
                 const SizedBox(width: 14),
                 Expanded(
                   child: Text(
-                    _inspectProgress ?? 'Running deep inspection...',
+                    _inspectProgress ?? 'Checking the facts...',
                     style: GoogleFonts.inter(
                       color: AppColors.textPrimary,
                       fontSize: 14,
@@ -917,10 +879,6 @@ class _ArticleDialogState extends State<_ArticleDialog> {
           const SizedBox(height: 20),
           const Divider(color: AppColors.border),
           const SizedBox(height: 14),
-          _researchSection(),
-          const SizedBox(height: 20),
-          const Divider(color: AppColors.border),
-          const SizedBox(height: 14),
           Text(
             'Ask about this story',
             style: GoogleFonts.inter(
@@ -1028,11 +986,47 @@ class _ArticleDialogState extends State<_ArticleDialog> {
     );
   }
 
+  /// Tavily Research in its own card. It runs in [AppState], so the spinner
+  /// keeps going after the dialog closes and reopens.
+  Widget _researchCard() {
+    return ListenableBuilder(
+      listenable: _state,
+      builder: (context, _) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.all(20),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceAlt,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: AppColors.border),
+        ),
+        child: _researchSection(context),
+      ),
+    );
+  }
+
+  void _startResearch(BuildContext context) {
+    _state.startResearch(widget.article);
+    showTopNotice(
+      context,
+      'Research started. It takes up to a minute; you will get a '
+      'notification when the report is ready.',
+      icon: Icons.travel_explore_rounded,
+    );
+  }
+
+  /// The terminal is part of the page behind this dialog, so close it first.
+  void _watchInTerminal() {
+    Navigator.of(context).pop();
+    TavilyTerminal.instance.show();
+  }
+
   /// Tavily Research: on request, a multi-source report with citations about
   /// the story. The result is stored on the server per story; later openings
   /// spend no credits.
-  Widget _researchSection() {
-    final r = _research;
+  Widget _researchSection(BuildContext context) {
+    final id = widget.article.id;
+    final r = _state.researchFor(id);
+    final error = _state.researchError(id);
     final heading = Row(
       children: [
         const Icon(
@@ -1050,7 +1044,7 @@ class _ArticleDialogState extends State<_ArticleDialog> {
           ),
         ),
         const Spacer(),
-        if (r != null && r.isCompleted)
+        if (r != null)
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
             decoration: BoxDecoration(
@@ -1071,7 +1065,7 @@ class _ArticleDialogState extends State<_ArticleDialog> {
       ],
     );
 
-    if (_researching || (r?.isRunning ?? false)) {
+    if (_state.isResearching(id)) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1091,7 +1085,8 @@ class _ArticleDialogState extends State<_ArticleDialog> {
               Expanded(
                 child: Text(
                   'Tavily Research is reading sources and writing a cited '
-                  'report. This takes up to a minute.',
+                  'report. You can close this story; a notification comes '
+                  'when it is ready.',
                   style: GoogleFonts.inter(
                     color: AppColors.textBody,
                     fontSize: 13,
@@ -1100,11 +1095,18 @@ class _ArticleDialogState extends State<_ArticleDialog> {
               ),
             ],
           ),
+          const SizedBox(height: 14),
+          WebButton(
+            label: 'Watch in Tavily terminal',
+            icon: Icons.terminal_rounded,
+            primary: false,
+            onTap: _watchInTerminal,
+          ),
         ],
       );
     }
 
-    if (r != null && r.isCompleted) {
+    if (r != null) {
       const shown = 8;
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1171,19 +1173,19 @@ class _ArticleDialogState extends State<_ArticleDialog> {
           'credits once; after that the report is saved for everyone.',
           style: GoogleFonts.inter(color: AppColors.textMuted, fontSize: 12.5),
         ),
-        if (_researchError != null) ...[
+        if (error != null) ...[
           const SizedBox(height: 8),
           Text(
-            _researchError!,
+            error,
             style: GoogleFonts.inter(color: AppColors.dislike, fontSize: 12.5),
           ),
         ],
         const SizedBox(height: 12),
         WebButton(
-          label: _researchError == null ? 'Research deeper' : 'Try again',
+          label: error == null ? 'Research deeper' : 'Try again',
           icon: Icons.travel_explore_rounded,
           primary: false,
-          onTap: _startResearch,
+          onTap: () => _startResearch(context),
         ),
       ],
     );

@@ -140,6 +140,7 @@ SIGNED_IN = [
     ("GET", "/api/users/{user_id}/preferences"),
     ("GET", "/api/users/{user_id}/sites"),
     ("POST", "/api/users/{user_id}/sites"),
+    ("GET", "/api/users/{user_id}/sites/articles"),
     ("DELETE", "/api/users/{user_id}/sites/{site_id}"),
     ("GET", "/api/users/{user_id}/follows"),
     ("POST", "/api/users/{user_id}/follows"),

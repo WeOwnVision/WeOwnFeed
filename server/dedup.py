@@ -25,6 +25,44 @@ from embedder import similarity_thresholds
 logger = logging.getLogger("dedup")
 
 
+def attach_also_published(items: List[Dict[str, Any]], max_outlets: int = 10) -> List[Dict[str, Any]]:
+    """
+    Adds `also_published_by` (other outlets' copies, oldest first, one per
+    outlet) and `also_published_by_count` to stories that lack them, in one
+    query for the whole list. The feed and article list build these in SQL;
+    Site Watch and search use this.
+    """
+    from db import get_db
+
+    ids = [str(i["id"]) for i in items if i.get("id") and "also_published_by" not in i]
+    if not ids:
+        return items
+    with get_db() as cur:
+        cur.execute("""
+            SELECT d.duplicate_of, d.id, d.source_feed, d.title, d.original_url, d.published_at
+            FROM articles d
+            WHERE d.duplicate_of = ANY(%s::uuid[])
+            ORDER BY d.published_at ASC NULLS LAST;
+        """, (ids,))
+        rows = cur.fetchall()
+    copies: Dict[str, List[Dict[str, Any]]] = {}
+    for primary_id, cid, source, title, url, published_at in rows:
+        copies.setdefault(str(primary_id), []).append({
+            "id": str(cid), "source": source, "title": title,
+            "url": url, "published_at": published_at,
+        })
+    for item in items:
+        if "also_published_by" in item or not item.get("id"):
+            continue
+        outlets: Dict[str, Dict[str, Any]] = {}
+        for c in copies.get(str(item["id"]), []):
+            if c["source"] and c["source"] != item.get("source"):
+                outlets.setdefault(c["source"], c)
+        item["also_published_by"] = list(outlets.values())[:max_outlets]
+        item["also_published_by_count"] = len(outlets)
+    return items
+
+
 def get_story_similarity_threshold() -> float:
     """Returns the same_story cosine similarity threshold for the configured backend."""
     return float(similarity_thresholds()["same_story"])

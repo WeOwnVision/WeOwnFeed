@@ -9,6 +9,8 @@ from schemas import ScrapedArticleIn
 from url_utils import canonicalize_url, extract_domain
 from content_cleaner import clean_article_markdown
 from image_extractor import is_valid_article_image, extract_og_image_from_url
+from dedup import attach_also_published
+from fact_check_status import attach_fact_check_verdicts
 from routers.deps import INGESTION_SECRET, validate_uuid
 from routers.users import get_personalized_feed_data
 
@@ -184,7 +186,7 @@ def get_articles(
                 return []
         return []
 
-    return [
+    return attach_fact_check_verdicts([
         {
             "id": str(r[0]), "source": r[1], "title": r[2], "url": r[3],
             "author": r[4], "published_at": r[5], "macro_tag": r[6],
@@ -196,7 +198,7 @@ def get_articles(
             "also_published_by_count": int(r[13]) if len(r) > 13 and r[13] is not None else 0
         }
         for r in rows
-    ]
+    ])
 
 
 @router.get("/api/articles/{article_id}")
@@ -246,7 +248,7 @@ def get_article(article_id: str):
             else:
                 body_display = raw_clean
 
-        return {
+        return attach_also_published(attach_fact_check_verdicts([{
             "id": str(row[0]), "source": row[1], "title": row[2], "url": row[3],
             "author": row[4], "published_at": row[5], "clean_text": body_display,
             "macro_tag": row[8],
@@ -254,5 +256,5 @@ def get_article(article_id: str):
             "micro_tags": row[10], "tldr": tldr,
             "image_url": row[12],
             "image_status": row[13] or ("resolved" if row[12] else "gradient_fallback")
-        }
+        }]))[0]
 

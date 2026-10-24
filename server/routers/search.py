@@ -1,4 +1,7 @@
-from typing import Optional
+import logging
+import os
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeout
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 
@@ -6,9 +9,32 @@ from db import get_db
 from routers.auth import optional_user
 from embedder import get_embedder, similarity_thresholds
 from tavily_service import search_news
+from dedup import attach_also_published
+from fact_check_status import attach_fact_check_verdicts
 from url_utils import canonicalize_url, extract_domain
 
 router = APIRouter(tags=["Hybrid RRF Search"])
+logger = logging.getLogger("search")
+
+# The query's embedding is a round trip to Nebius: usually ~0.6 s, at times
+# several seconds. Search waits at most this long, then answers from full
+# text and tags; the call keeps running and its vector is cached
+# (embedder.embed_query), so asking again moments later adds the meaning
+# matches.
+SEARCH_EMBED_WAIT_SECONDS = float(os.getenv("SEARCH_EMBED_WAIT_SECONDS", "1.5"))
+_embed_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="search-embed")
+
+
+def _query_vector(q: str) -> Optional[List[float]]:
+    """The query's vector, or None if it is not ready in time or failed."""
+    future = _embed_pool.submit(get_embedder().embed_query, q)
+    try:
+        return future.result(timeout=SEARCH_EMBED_WAIT_SECONDS)
+    except FuturesTimeout:
+        logger.info("[Search] Embedding slower than %.1fs; answering from text and tags", SEARCH_EMBED_WAIT_SECONDS)
+    except Exception as e:
+        logger.warning("[Search] Embedding failed (%s); answering from text and tags", e)
+    return None
 
 
 def execute_hybrid_search(q: str, grouped: bool = False, limit: int = 12):
@@ -21,9 +47,8 @@ def execute_hybrid_search(q: str, grouped: bool = False, limit: int = 12):
         "what", "which", "type", "sort", "small", "big", "good", "like"
     }
 
-    # Step 1: Dense Vector Embedding
-    embedder = get_embedder()
-    q_vec = embedder.embed_query(q)
+    # Step 1: Dense Vector Embedding (None: text and tag tiers only)
+    q_vec = _query_vector(q)
     # Cosine distance cut-offs of the configured embedding model (MiniLM: 0.78 / 0.68 / 0.40).
     sim = similarity_thresholds()
     noise_dist = 1.0 - sim["search_noise"]
@@ -49,6 +74,7 @@ def execute_hybrid_search(q: str, grouped: bool = False, limit: int = 12):
           AND macro_tag IS NOT NULL
           AND macro_tag != 'Off-Topic'
           AND embedding IS NOT NULL
+          AND %(q_vec)s::vector IS NOT NULL
           AND (embedding <=> %(q_vec)s::vector) < %(noise_dist)s
         ORDER BY (embedding <=> %(q_vec)s::vector) ASC
         LIMIT 25
@@ -192,9 +218,14 @@ def execute_hybrid_search(q: str, grouped: bool = False, limit: int = 12):
         else:
             explore_matches.append(item)
 
+    attach_fact_check_verdicts(direct_matches + explore_matches)
+    attach_also_published(direct_matches + explore_matches)
     if grouped is True or (isinstance(grouped, str) and grouped.lower() in ("true", "1")):
         return {
             "query": q,
+            # False: the meaning tier was skipped (slow embedding); ask again
+            # shortly for the full result.
+            "semantic": q_vec is not None,
             "total_direct": len(direct_matches),
             "total_explore": len(explore_matches),
             "direct": direct_matches,

@@ -52,7 +52,8 @@ extension ArticleUi on Article {
   }
 
   /// Whether other outlets covered this same story.
-  bool get hasAlsoPublished => alsoPublishedByCount > 0 && alsoPublishedBy.isNotEmpty;
+  bool get hasAlsoPublished =>
+      alsoPublishedByCount > 0 && alsoPublishedBy.isNotEmpty;
 
   /// Single standardized line: "Also published by IGN, Kotaku and 5 more".
   String get alsoPublishedLine {

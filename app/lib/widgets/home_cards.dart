@@ -4,7 +4,6 @@ import 'package:google_fonts/google_fonts.dart';
 import '../models/api_models.dart';
 import '../models/article_ui.dart';
 import '../theme/app_colors.dart';
-import 'audio_bulletin_player.dart';
 import 'common.dart';
 import 'simple_markdown.dart';
 import 'state_views.dart';
@@ -33,7 +32,7 @@ class _Card extends StatelessWidget {
 }
 
 // ---------------------------------------------------------------------------
-// Headline card (image + title + summary + audio bulletin)
+// Headline card (image + title + summary)
 // ---------------------------------------------------------------------------
 /// Shows a single story by default ("TOP STORY"). The home page "Latest
 /// developments" card uses the same layout: [label], [title] and [summary]
@@ -73,7 +72,7 @@ class DailySummaryCard extends StatelessWidget {
   /// Desktop sizes.
   final bool large;
 
-  /// Image on the left, headline and player on the right.
+  /// Image on the left, headline and summary on the right.
   final bool horizontal;
   final VoidCallback? onTap;
 
@@ -90,21 +89,6 @@ class DailySummaryCard extends StatelessWidget {
             fontSize: large ? 12 : 11,
             fontWeight: FontWeight.w700,
             letterSpacing: 1.0,
-          ),
-        ),
-        const Spacer(),
-        Icon(
-          Icons.headphones_outlined,
-          size: large ? 18 : 16,
-          color: AppColors.textBody,
-        ),
-        const SizedBox(width: 5),
-        Text(
-          'Audio Bulletin',
-          style: GoogleFonts.inter(
-            color: AppColors.textBody,
-            fontSize: large ? 14 : 13,
-            fontWeight: FontWeight.w500,
           ),
         ),
       ],
@@ -205,8 +189,6 @@ class DailySummaryCard extends StatelessWidget {
                         const SizedBox(height: 14),
                         _AskWaiButton(onTap: onAsk!),
                       ],
-                      const SizedBox(height: 20),
-                      const AudioBulletinPlayer(),
                     ],
                   ),
                 ),
@@ -233,8 +215,6 @@ class DailySummaryCard extends StatelessWidget {
             SizedBox(height: large ? 14 : 10),
             _AskWaiButton(onTap: onAsk!),
           ],
-          SizedBox(height: large ? 18 : 14),
-          const AudioBulletinPlayer(),
         ],
       ),
     );
