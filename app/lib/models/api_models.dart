@@ -5,6 +5,8 @@
 /// to empty lists and texts to `null`.
 library;
 
+import '../services/text_fragment.dart';
+
 List<String> _stringList(Object? value) =>
     value is List ? value.whereType<String>().toList() : const [];
 
@@ -35,6 +37,7 @@ class Article {
     this.factCheckVerdict,
     this.alsoPublishedBy = const [],
     this.alsoPublishedByCount = 0,
+    this.origins = const [],
   });
 
   factory Article.fromJson(Map<String, dynamic> json) {
@@ -86,6 +89,12 @@ class Article {
                 : const <AlsoPublishedBy>[]),
       alsoPublishedByCount:
           (json['also_published_by_count'] as num?)?.toInt() ?? 0,
+      origins: json['origins'] is List
+          ? (json['origins'] as List)
+                .whereType<Map>()
+                .map((m) => StoryOrigin.fromJson(Map<String, dynamic>.from(m)))
+                .toList()
+          : const [],
     );
   }
 
@@ -134,6 +143,10 @@ class Article {
   /// Total count of distinct duplicate outlets.
   final int alsoPublishedByCount;
 
+  /// The outlets that ran this story grouped by independent origin: a wire
+  /// agency named in the byline, or the outlet itself. Empty without copies.
+  final List<StoryOrigin> origins;
+
   Map<String, dynamic> toJson() => {
     'id': id,
     'source': source,
@@ -157,6 +170,33 @@ class Article {
       'also_published_by': alsoPublishedBy.map((e) => e.toJson()).toList(),
     if (alsoPublishedByCount > 0)
       'also_published_by_count': alsoPublishedByCount,
+    if (origins.isNotEmpty) 'origins': [for (final o in origins) o.toJson()],
+  };
+}
+
+/// One independent origin of a story: a wire agency ([wire]) and the
+/// outlets that reprinted it, or one outlet's own reporting.
+class StoryOrigin {
+  const StoryOrigin({
+    required this.name,
+    this.wire = false,
+    this.outlets = const [],
+  });
+
+  factory StoryOrigin.fromJson(Map<String, dynamic> json) => StoryOrigin(
+    name: (json['name'] as String?) ?? '',
+    wire: json['wire'] as bool? ?? false,
+    outlets: _stringList(json['outlets']),
+  );
+
+  final String name;
+  final bool wire;
+  final List<String> outlets;
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'wire': wire,
+    'outlets': outlets,
   };
 }
 
@@ -214,14 +254,17 @@ class ClaimItem {
     required this.status,
     required this.evidenceSummary,
     this.sourceUrl,
+    this.quote,
   });
 
   factory ClaimItem.fromJson(Map<String, dynamic> json) {
+    final summary = (json['evidence_summary'] as String?) ?? '';
     return ClaimItem(
       claim: (json['claim'] as String?) ?? '',
       status: (json['status'] as String?) ?? 'unverified',
-      evidenceSummary: (json['evidence_summary'] as String?) ?? '',
+      evidenceSummary: summary,
       sourceUrl: json['source_url'] as String?,
+      quote: (json['quote'] as String?) ?? quoteFromSummary(summary),
     );
   }
 
@@ -229,6 +272,10 @@ class ClaimItem {
   final String status;
   final String evidenceSummary;
   final String? sourceUrl;
+
+  /// The verbatim sentence from [sourceUrl] that backs or contradicts the
+  /// claim.
+  final String? quote;
 }
 
 class FactCheckResult {

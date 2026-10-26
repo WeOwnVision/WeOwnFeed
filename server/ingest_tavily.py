@@ -4,7 +4,6 @@ import time
 import json
 import re
 import email.utils
-import hashlib
 import argparse
 import logging
 from datetime import datetime, timezone, timedelta
@@ -17,8 +16,9 @@ from dotenv import load_dotenv
 import query_scheduler
 from tavily_service import search_news, tavily_extract
 from url_utils import canonicalize_url, extract_domain
-from content_cleaner import clean_article_markdown, extract_normalized_shingles
+from content_cleaner import clean_article_markdown
 from image_extractor import resolve_article_image
+from story_copies import copy_entry, group_copies
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
@@ -281,8 +281,6 @@ class HarvestDedup:
 
     def __init__(self):
         self.seen_urls: set[str] = set()
-        self.seen_content_hashes: set[str] = set()
-        self.seen_shingle_sets: list[set[tuple[str, ...]]] = []
 
 
 def _harvest_query(
@@ -298,8 +296,8 @@ def _harvest_query(
     """
     Runs one Tavily search and ingests its new articles through the API.
     Pipeline per result: URL dedup -> article-URL check -> markdown cleaning ->
-    batched Extract fallback for thin content -> content-hash and shingle
-    (wire copy) dedup -> date gate -> POST /api/internal/ingest.
+    batched Extract fallback for thin content -> date gate -> copies grouped
+    (best source kept, the rest listed) -> POST /api/internal/ingest.
 
     Returns (fetched, inserted, abort). abort=True means the ingest API rejected
     the secret and the whole cycle must stop.
@@ -355,33 +353,12 @@ def _harvest_query(
             if ep_url and ep.get("raw_content"):
                 extracted_by_url[ep_url] = ep["raw_content"]
 
-    payload = []
+    candidates = []
     for r, clean_url, title, text, raw_text in staged_items:
         if (not text or len(text) < 250) and clean_url in extracted_by_url:
             text = clean_article_markdown(title, extracted_by_url[clean_url])
         if not text or len(text) < 250:
             continue
-
-        # Layer 2: Content Hash Deduplication (SHA-256)
-        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
-        if content_hash in dedup.seen_content_hashes:
-            continue
-        dedup.seen_content_hashes.add(content_hash)
-
-        # Layer 3: Normalized Shingle Jaccard Similarity (Syndicated wire copies)
-        shingles = extract_normalized_shingles(text, k=5)
-        if len(shingles) >= 5:
-            is_wire_dup = False
-            for prev_shingles in dedup.seen_shingle_sets:
-                intersection = len(shingles & prev_shingles)
-                union = len(shingles | prev_shingles)
-                if union > 0 and (intersection / union) >= 0.65:
-                    logger.info("[Dedup Gate] Dropped syndicated wire copy (Jaccard: %.2f) for %s", intersection / union, clean_url)
-                    is_wire_dup = True
-                    break
-            if is_wire_dup:
-                continue
-            dedup.seen_shingle_sets.append(shingles)
 
         # Boundary-safe markdown truncation and code block balancing
         text = _truncate_markdown_safely(text, max_chars=25000)
@@ -390,9 +367,27 @@ def _harvest_query(
         published_iso = _parse_and_validate_date(r.get("published_date"))
         if not published_iso:
             continue
+        candidates.append({"r": r, "url": clean_url, "title": title, "text": text,
+                           "raw": raw_text, "published": published_iso})
+
+    # Copies of one story (same headline, or wire reprints of the same text):
+    # only the best source is sent for processing; the others ride along as
+    # a name and a link (story_copies.py). Copies of a story stored earlier
+    # are caught by the ingest API.
+    payload = []
+    for group in group_copies(candidates):
+        best = candidates[group[0]]
+        copies = [
+            copy_entry(c["title"], c["url"], c["text"], c["published"])
+            for c in (candidates[i] for i in group[1:])
+        ]
+        if copies:
+            logger.info("[Copies] %s kept; %d copies listed (%s)", extract_domain(best["url"]),
+                        len(copies), ", ".join(c["Site"] for c in copies))
+        r, clean_url = best["r"], best["url"]
 
         # High-fidelity image resolution (Tavily candidates -> Markdown body -> fast OG fetch)
-        effective_raw = extracted_by_url.get(clean_url) or raw_text
+        effective_raw = extracted_by_url.get(clean_url) or best["raw"]
         tav_imgs = r.get("images") if isinstance(r.get("images"), list) else ([r.get("image")] if r.get("image") else [])
         img_url, img_status = resolve_article_image(
             raw_markdown=effective_raw,
@@ -404,14 +399,15 @@ def _harvest_query(
         # Strict Ingest API contract payload
         payload.append({
             "Site": extract_domain(clean_url),
-            "Baslik": title,
+            "Baslik": best["title"],
             "Link": clean_url,
             "Yazar": r.get("author") or extract_domain(clean_url),
-            "Tarih": published_iso,
-            "TamMetin": text,
+            "Tarih": best["published"],
+            "TamMetin": best["text"],
             "image_url": img_url,
             "image_status": img_status,
-            "Resim": img_url
+            "Resim": img_url,
+            "Copies": copies,
         })
 
     if not payload:

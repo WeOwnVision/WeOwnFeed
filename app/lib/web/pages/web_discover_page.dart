@@ -546,11 +546,13 @@ class _SidePanel extends StatelessWidget {
                     height: 1.55,
                   ),
                 ),
-                const SizedBox(height: 16),
-                LinkButton(
-                  'Dig deeper with WAI',
-                  onTap: () => state.askAbout(top),
-                ),
+                if (state.isLive) ...[
+                  const SizedBox(height: 16),
+                  LinkButton(
+                    'Dig deeper with WAI',
+                    onTap: () => state.askAbout(top),
+                  ),
+                ],
               ],
             ),
           ),

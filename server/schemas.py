@@ -2,16 +2,27 @@ from pydantic import BaseModel, Field
 from typing import Optional, List, Dict, Any
 from datetime import datetime
 
+class ArticleCopyIn(BaseModel):
+    """Another outlet's copy of the same story: listed, not processed."""
+    Site: str
+    Baslik: str
+    Link: str
+    Tarih: Optional[str] = None
+    Origin: Optional[str] = None
+
+
 class ScrapedArticleIn(BaseModel):
     Site: str
     Baslik: str
     Link: str
     Yazar: Optional[str] = None
     Tarih: Optional[str] = None
-    TamMetin: str
+    # Empty with Copies: only adds the copies to the stored story at Link.
+    TamMetin: str = ""
     Resim: Optional[str] = None
     image_url: Optional[str] = None
     image_status: Optional[str] = None
+    Copies: List[ArticleCopyIn] = Field(default_factory=list)
 
 class ArticleEnrichmentOut(BaseModel):
     macro_tag: str = Field(..., description="One of: Tech, AI, Hardware, Automotive, Gaming, Finance, Science")

@@ -90,6 +90,7 @@ class _WebFeedPageState extends State<WebFeedPage>
   }
 
   void _sendToWai() {
+    if (!_state.isLive) return;
     final news = _state.currentFeedArticle;
     if (news != null) _state.askAbout(news);
   }
@@ -199,7 +200,7 @@ class _WebFeedPageState extends State<WebFeedPage>
         _ActionBar(
           enabled: current != null,
           onDislike: () => _swipe(like: false),
-          onWai: _sendToWai,
+          onWai: _state.isLive ? _sendToWai : null,
           onLike: () => _swipe(like: true),
         ),
         const SizedBox(height: 18),
@@ -703,7 +704,9 @@ class _ActionBar extends StatelessWidget {
 
   final bool enabled;
   final VoidCallback onDislike;
-  final VoidCallback onWai;
+
+  /// `null` hides the WAI button (offline sessions have no WAI).
+  final VoidCallback? onWai;
   final VoidCallback onLike;
 
   @override
@@ -724,16 +727,18 @@ class _ActionBar extends StatelessWidget {
               size: 64,
               onTap: onDislike,
             ),
-            const SizedBox(width: 56),
-            _RoundAction(
-              icon: Icons.forum_outlined,
-              label: 'Send to WAI',
-              shortcut: '↑',
-              color: AppColors.accentLight,
-              size: 84,
-              primary: true,
-              onTap: onWai,
-            ),
+            if (onWai != null) ...[
+              const SizedBox(width: 56),
+              _RoundAction(
+                icon: Icons.forum_outlined,
+                label: 'Send to WAI',
+                shortcut: '↑',
+                color: AppColors.accentLight,
+                size: 84,
+                primary: true,
+                onTap: onWai!,
+              ),
+            ],
             const SizedBox(width: 56),
             _RoundAction(
               icon: Icons.thumb_up_alt_outlined,
@@ -897,16 +902,17 @@ class _SidePanel extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 20),
-        const PanelCard(
+        PanelCard(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              OverlineLabel('Keyboard shortcuts'),
-              SizedBox(height: 14),
-              _Shortcut(keyLabel: '←', label: 'Dislike (hides it)'),
-              _Shortcut(keyLabel: '→', label: 'Like'),
-              _Shortcut(keyLabel: '↑', label: 'Send to WAI'),
-              _Shortcut(keyLabel: 'Space', label: 'Story details'),
+              const OverlineLabel('Keyboard shortcuts'),
+              const SizedBox(height: 14),
+              const _Shortcut(keyLabel: '←', label: 'Dislike (hides it)'),
+              const _Shortcut(keyLabel: '→', label: 'Like'),
+              if (AppState.instance.isLive)
+                const _Shortcut(keyLabel: '↑', label: 'Send to WAI'),
+              const _Shortcut(keyLabel: 'Space', label: 'Story details'),
             ],
           ),
         ),

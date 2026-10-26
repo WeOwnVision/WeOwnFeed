@@ -27,39 +27,64 @@ logger = logging.getLogger("dedup")
 
 def attach_also_published(items: List[Dict[str, Any]], max_outlets: int = 10) -> List[Dict[str, Any]]:
     """
-    Adds `also_published_by` (other outlets' copies, oldest first, one per
-    outlet) and `also_published_by_count` to stories that lack them, in one
-    query for the whole list. The feed and article list build these in SQL;
-    Site Watch and search use this.
+    Adds to every story, in three queries for the whole list:
+      also_published_by        other outlets' copies, oldest first, one per outlet
+      also_published_by_count  how many other outlets ran it
+      origins                  independent origins: [{"name", "wire", "outlets"}]
+      independent_origins_count
+    Copies are full articles linked later (`duplicate_of`) and copies kept as
+    a name and a link when fetched (`article_mentions`, story_copies.py).
+    A copy's origin is the wire agency in its byline, else its outlet.
     """
     from db import get_db
+    from story_copies import group_origins, origin_of
 
-    ids = [str(i["id"]) for i in items if i.get("id") and "also_published_by" not in i]
+    ids = [str(i["id"]) for i in items if i.get("id")]
     if not ids:
         return items
     with get_db() as cur:
         cur.execute("""
-            SELECT d.duplicate_of, d.id, d.source_feed, d.title, d.original_url, d.published_at
+            SELECT id, LEFT(clean_text, 2500), original_url FROM articles WHERE id = ANY(%s::uuid[]);
+        """, (ids,))
+        primary_origin = {str(r[0]): origin_of(r[1] or "", r[2] or "") for r in cur.fetchall()}
+        cur.execute("""
+            SELECT d.duplicate_of, d.id, d.source_feed, d.title, d.original_url, d.published_at,
+                   LEFT(d.clean_text, 2500), NULL
             FROM articles d
             WHERE d.duplicate_of = ANY(%s::uuid[])
-            ORDER BY d.published_at ASC NULLS LAST;
-        """, (ids,))
+            UNION ALL
+            SELECT m.article_id, m.id, m.source, m.title, m.url, m.published_at, NULL, m.origin
+            FROM article_mentions m
+            WHERE m.article_id = ANY(%s::uuid[])
+            ORDER BY 6 ASC NULLS LAST;
+        """, (ids, ids))
         rows = cur.fetchall()
     copies: Dict[str, List[Dict[str, Any]]] = {}
-    for primary_id, cid, source, title, url, published_at in rows:
+    for primary_id, cid, source, title, url, published_at, text, origin in rows:
         copies.setdefault(str(primary_id), []).append({
             "id": str(cid), "source": source, "title": title,
             "url": url, "published_at": published_at,
+            "origin": origin or origin_of(text or "", url or ""),
         })
     for item in items:
-        if "also_published_by" in item or not item.get("id"):
+        pid = str(item.get("id") or "")
+        if not pid:
             continue
         outlets: Dict[str, Dict[str, Any]] = {}
-        for c in copies.get(str(item["id"]), []):
+        for c in copies.get(pid, []):
             if c["source"] and c["source"] != item.get("source"):
                 outlets.setdefault(c["source"], c)
-        item["also_published_by"] = list(outlets.values())[:max_outlets]
+        item["also_published_by"] = [
+            {k: c[k] for k in ("id", "source", "title", "url", "published_at")}
+            for c in list(outlets.values())[:max_outlets]
+        ]
         item["also_published_by_count"] = len(outlets)
+        origins = group_origins(
+            {"source": item.get("source"), "origin": primary_origin.get(pid) or item.get("source")},
+            list(outlets.values()),
+        )
+        item["origins"] = origins if outlets else []
+        item["independent_origins_count"] = len(origins)
     return items
 
 

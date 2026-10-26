@@ -189,7 +189,7 @@ class _WebHomePageState extends State<WebHomePage> {
           ? null
           : 'From ${stories.length} stories picked for you',
       onTap: ready ? () => _showBrief(context) : null,
-      onAsk: ready ? _state.askLatest : null,
+      onAsk: ready && _state.isLive ? _state.askLatest : null,
     );
   }
 

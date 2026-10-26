@@ -177,6 +177,21 @@ CREATE TABLE IF NOT EXISTS site_discovered_urls (
 );
 CREATE INDEX IF NOT EXISTS idx_site_discovered_canonical ON site_discovered_urls (url_canonical);
 
+-- Copies of a story kept as a name and a link (story_copies.py): only
+-- the best copy is a full article; the others are listed on its card.
+CREATE TABLE IF NOT EXISTS article_mentions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    article_id UUID NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    source VARCHAR(255),
+    title TEXT,
+    url TEXT NOT NULL,
+    published_at TIMESTAMP WITH TIME ZONE,
+    origin VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (article_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_article_mentions_article ON article_mentions (article_id);
+
 -- 7.3 Semantic Story Clusters
 CREATE TABLE IF NOT EXISTS story_clusters (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),

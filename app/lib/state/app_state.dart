@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../models/api_models.dart';
+import '../offline/backend_client.dart';
 import '../services/api_service.dart';
 import '../services/local_cache.dart';
 
@@ -14,8 +15,16 @@ import '../services/local_cache.dart';
 /// Tests can swap in a new instance with a fake [ApiService]:
 /// `AppState.instance = AppState(api: ...)`.
 class AppState extends ChangeNotifier {
-  AppState({ApiService? api})
-    : api = api ?? ApiService(logger: kDebugMode ? debugPrint : null) {
+  /// Without [api] the app's [BackendClient] is used (live server first,
+  /// offline answers when there is none).
+  AppState({ApiService? api, BackendClient? backend})
+    : backend = backend ?? (api == null ? BackendClient.instance : null),
+      api =
+          api ??
+          ApiService(
+            client: backend ?? BackendClient.instance,
+            logger: kDebugMode ? debugPrint : null,
+          ) {
     // A request rejected for an expired token sends the user back to the
     // sign-in screen.
     this.api.onUnauthorized = () {
@@ -26,6 +35,15 @@ class AppState extends ChangeNotifier {
   static AppState instance = AppState();
 
   final ApiService api;
+
+  /// `null` when tests pass their own [api].
+  final BackendClient? backend;
+
+  /// A live server answers this session. Online-only controls (WAI chat,
+  /// Ask, starting a Fact Check or Research, adding sites and "+" follows)
+  /// show only then. Tests without a [backend] count as live.
+  bool get isLive => backend?.isLive ?? true;
+
   LocalCache? _cache;
 
   /// `true` when the current feed is served from local cache (seed or stale).
@@ -89,6 +107,8 @@ class AppState extends ChangeNotifier {
   Future<void> init() async {
     if (_initialized) return;
     _initialized = true;
+    // Live or offline is decided before anything is requested (≤ 4 s).
+    await backend?.mode;
     try {
       _prefs = await SharedPreferences.getInstance();
       _cache = LocalCache(_prefs!);

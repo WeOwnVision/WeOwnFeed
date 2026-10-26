@@ -275,6 +275,7 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
                 for r in fallback_rows
             ]
             attach_fact_check_verdicts(items)
+            attach_also_published(items)
             return {
                 "user_id": valid_user_id,
                 "is_fallback": True,
@@ -372,6 +373,11 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
                           EXISTS (
                               SELECT 1 FROM site_discovered_urls sdu
                               WHERE sdu.site_id = ws.id AND sdu.url_canonical = a.original_url
+                          )
+                          OR EXISTS (
+                              SELECT 1 FROM article_mentions m
+                              JOIN site_discovered_urls sdu ON sdu.url_canonical = m.url
+                              WHERE m.article_id = a.id AND sdu.site_id = ws.id
                           )
                           OR a.source_feed = ws.site_name
                           OR POSITION(replace(replace(replace(ws.root_url, 'https://', ''), 'http://', ''), 'www.', '') IN a.original_url) > 0
@@ -478,6 +484,7 @@ def get_personalized_feed_data(user_id: str, page: int = 1, page_size: int = 20)
             for r in ranked_rows
         ]
         attach_fact_check_verdicts(items)
+        attach_also_published(items)
 
         return {
             "user_id": valid_user_id,
@@ -923,6 +930,12 @@ def get_followed_site_articles(user_id: str, limit: int = 200, me: str = Depends
              EXISTS (
                  SELECT 1 FROM site_discovered_urls sdu
                  WHERE sdu.site_id = ws.id AND sdu.url_canonical = a.original_url
+             )
+             -- the site's post was kept as a copy of this story
+             OR EXISTS (
+                 SELECT 1 FROM article_mentions m
+                 JOIN site_discovered_urls sdu ON sdu.url_canonical = m.url
+                 WHERE m.article_id = a.id AND sdu.site_id = ws.id
              )
              OR a.source_feed = ws.site_name
              OR POSITION(replace(replace(replace(ws.root_url, 'https://', ''), 'http://', ''), 'www.', '') IN a.original_url) > 0

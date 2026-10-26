@@ -37,6 +37,8 @@ dependencies:
   google_fonts: ^8.1.0
   shared_preferences: ^2.5.5
   url_launcher: ^6.3.2
+  hive_ce: ^2.22.0
+  hive_ce_flutter: ^2.3.4
 
 dev_dependencies:
   flutter_test:
@@ -64,6 +66,8 @@ flutter:
     - assets/images/
     - assets/images/news/
     - assets/google_fonts/
+    # Server data for sessions without a server (tool/export_snapshot.dart).
+    - assets/offline/
 
   # To add assets to your application, add an assets section, like this:
   # assets:

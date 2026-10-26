@@ -271,14 +271,19 @@ def assign_origins(articles: List[Dict[str, Any]]) -> Dict[str, Any]:
         root_domain = _root_publisher_domain(domain) or domain
         title = art.get("title") or "Article"
 
-        # 1. Check for explicit wire service datelines/bylines/attributions
-        detected_wire = None
-        for wire_name, pattern in WIRE_PATTERNS.items():
-            if re.search(pattern, text[:2500], re.IGNORECASE):
-                detected_wire = wire_name
-                break
+        # A copy kept as a name and a link carries the origin read from its
+        # text when it was fetched (story_copies.origin_of); it has no text.
+        given_origin = art.get("origin")
 
-        origin_name = detected_wire or root_domain or "Independent Web"
+        # 1. Check for explicit wire service datelines/bylines/attributions
+        detected_wire = given_origin if given_origin in WIRE_PATTERNS else None
+        if not given_origin:
+            for wire_name, pattern in WIRE_PATTERNS.items():
+                if re.search(pattern, text[:2500], re.IGNORECASE):
+                    detected_wire = wire_name
+                    break
+
+        origin_name = detected_wire or given_origin or root_domain or "Independent Web"
         origin_type = "wire_syndication" if detected_wire else "original_reporting"
 
         # 2. Check for Jaccard shingle similarity across existing documents

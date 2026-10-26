@@ -77,6 +77,8 @@ server/
 ├── tavily_service.py        # Tavily client: 5 endpoints, key rotation, cache, call log, mock mode
 ├── evidence_verifier.py     # Receipts: claims, 3-angle verification, span grounding, origins
 ├── content_cleaner.py       # 4-pass Markdown cleaner and junk page gates
+├── story_copies.py          # Copies of one story: same headline/text, best source kept, rest listed with origin
+├── dedup.py                 # Later copies linked by meaning (duplicate_of); "also published by" + origins for lists
 ├── image_extractor.py       # Article photo extraction and validation
 ├── taxonomy.py              # Categories, subtopics, tag normalization
 ├── url_utils.py             # URL canonicalization and domain helpers
@@ -128,8 +130,11 @@ ingest_tavily: Tavily Search (topic=news) ── short body ──► Tavily Ext
 site_watcher:  Tavily Map (URL diff) ──► Crawl / Extract
                        │
                        ▼
-content_cleaner (junk gates, de-dup) ──► POST /api/internal/ingest (X-Secret)
-                       │                         canonical URL SHA-256, ON CONFLICT DO NOTHING
+content_cleaner (junk gates) ──► story_copies: copies of one story grouped,
+                       │         best source kept, the rest listed with their origin
+                       ▼
+POST /api/internal/ingest (X-Secret): canonical URL SHA-256, ON CONFLICT DO NOTHING;
+                       │         a copy of a story stored in the last 3 days → article_mentions
                        ▼
 articles (is_processed = FALSE) ──► worker.py
     summary (Nano) → topic gate (FAST) → labels (Nano, JSON schema) → briefing (Nano)

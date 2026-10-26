@@ -5,7 +5,8 @@ from dateutil import parser as date_parser
 from fastapi import APIRouter, HTTPException, Header
 
 from db import get_db
-from schemas import ScrapedArticleIn
+from schemas import ArticleCopyIn, ScrapedArticleIn
+from story_copies import TITLE_RELATED, origin_of, same_story, title_similarity
 from url_utils import canonicalize_url, extract_domain
 from content_cleaner import clean_article_markdown
 from image_extractor import is_valid_article_image, extract_og_image_from_url
@@ -17,28 +18,100 @@ from routers.users import get_personalized_feed_data
 router = APIRouter(tags=["Articles & Ingestion"])
 
 
+# A story that arrives within this window of a stored one it copies is listed
+# on that story instead of being processed again (story_copies.py).
+COPY_WINDOW_DAYS = 3
+
+
+def _parse_pub_date(value):
+    try:
+        pub_date = date_parser.parse(value) if value else datetime.now(timezone.utc)
+        if pub_date.tzinfo is None:
+            pub_date = pub_date.replace(tzinfo=timezone.utc)
+    except Exception:
+        pub_date = datetime.now(timezone.utc)
+    return min(pub_date, datetime.now(timezone.utc))
+
+
+def _store_copies(cur, article_id, copies) -> int:
+    stored = 0
+    for c in copies:
+        link = canonicalize_url(c.Link)
+        if not link:
+            continue
+        cur.execute("""
+            INSERT INTO article_mentions (article_id, source, title, url, published_at, origin)
+            VALUES (%s, %s, %s, %s, %s, %s)
+            ON CONFLICT (article_id, url) DO NOTHING;
+        """, (article_id, c.Site or extract_domain(link), c.Baslik, link,
+              _parse_pub_date(c.Tarih), c.Origin or extract_domain(link)))
+        stored += cur.rowcount or 0
+    return stored
+
+
+def _stored_story_copied_by(cur, title: str, text: str, link: str):
+    """Id of a recent stored story that this one copies, or None."""
+    cur.execute("""
+        SELECT id, title FROM articles
+        WHERE duplicate_of IS NULL
+          AND original_url <> %s
+          AND created_at >= NOW() - (%s || ' days')::interval
+          AND (macro_tag IS NULL OR macro_tag <> 'Off-Topic');
+    """, (link, str(COPY_WINDOW_DAYS)))
+    candidates = sorted(
+        ((str(r[0]), r[1], title_similarity(title, r[1] or "")) for r in cur.fetchall()),
+        key=lambda c: -c[2],
+    )
+    for cand_id, cand_title, sim in candidates[:3]:
+        if sim < TITLE_RELATED:
+            break
+        cur.execute("SELECT LEFT(clean_text, 8000) FROM articles WHERE id = %s;", (cand_id,))
+        row = cur.fetchone()
+        if same_story(title, text, cand_title or "", (row[0] if row else "") or ""):
+            return cand_id
+    return None
+
+
 @router.post("/api/internal/ingest")
 def ingest_articles(items: list[ScrapedArticleIn], x_secret: str = Header(...)):
+    """
+    Stores fetched stories. Each may carry `Copies` (other outlets' versions
+    of it, listed and never processed). A story that copies one stored in the
+    last COPY_WINDOW_DAYS is added to that story's copies instead of becoming
+    a new article. An item with empty TamMetin only adds its copies to the
+    stored story at its Link.
+    """
     if not hmac.compare_digest(x_secret.encode("utf-8"), INGESTION_SECRET.encode("utf-8")):
         raise HTTPException(status_code=401, detail="Invalid ingestion secret")
 
     inserted = 0
+    merged = 0
     with get_db() as cur:
         for item in items:
             canonical_link = canonicalize_url(item.Link)
             url_hash = hashlib.sha256(canonical_link.encode("utf-8")).hexdigest()
-            try:
-                pub_date = date_parser.parse(item.Tarih) if item.Tarih else datetime.now(timezone.utc)
-                if pub_date.tzinfo is None:
-                    pub_date = pub_date.replace(tzinfo=timezone.utc)
-            except Exception:
-                pub_date = datetime.now(timezone.utc)
-            now_utc = datetime.now(timezone.utc)
-            if pub_date > now_utc:
-                pub_date = now_utc
 
+            if not item.TamMetin.strip():
+                cur.execute("SELECT id FROM articles WHERE url_hash = %s;", (url_hash,))
+                row = cur.fetchone()
+                if row:
+                    merged += _store_copies(cur, row[0], item.Copies)
+                continue
+
+            pub_date = _parse_pub_date(item.Tarih)
             cleaned_content = clean_article_markdown(item.Baslik, item.TamMetin)
-            
+
+            cur.execute("SELECT 1 FROM articles WHERE url_hash = %s;", (url_hash,))
+            if not cur.fetchone():
+                primary_id = _stored_story_copied_by(cur, item.Baslik, cleaned_content, canonical_link)
+                if primary_id:
+                    copy = ArticleCopyIn(
+                        Site=item.Site, Baslik=item.Baslik, Link=canonical_link, Tarih=item.Tarih,
+                        Origin=origin_of(cleaned_content, canonical_link),
+                    )
+                    merged += _store_copies(cur, primary_id, [copy, *item.Copies])
+                    continue
+
             # Resolve real article photo: validate candidate or fallback to fast OG extraction
             img_url = item.image_url or item.Resim
             if img_url and is_valid_article_image(img_url):
@@ -61,10 +134,12 @@ def ingest_articles(items: list[ScrapedArticleIn], x_secret: str = Header(...)):
                     raw_scraped_text = COALESCE(articles.raw_scraped_text, EXCLUDED.raw_scraped_text)
                 RETURNING id;
             """, (url_hash, item.Site, item.Baslik, canonical_link, item.Yazar, pub_date, cleaned_content, cleaned_content, img_url, img_status))
-            if cur.fetchone():
+            row = cur.fetchone()
+            if row:
                 inserted += 1
+                merged += _store_copies(cur, row[0], item.Copies)
 
-    return {"received": len(items), "inserted": inserted}
+    return {"received": len(items), "inserted": inserted, "merged": merged}
 
 
 # Static route declared BEFORE dynamic /api/articles/{article_id}
@@ -186,7 +261,7 @@ def get_articles(
                 return []
         return []
 
-    return attach_fact_check_verdicts([
+    return attach_also_published(attach_fact_check_verdicts([
         {
             "id": str(r[0]), "source": r[1], "title": r[2], "url": r[3],
             "author": r[4], "published_at": r[5], "macro_tag": r[6],
@@ -198,7 +273,7 @@ def get_articles(
             "also_published_by_count": int(r[13]) if len(r) > 13 and r[13] is not None else 0
         }
         for r in rows
-    ])
+    ]))
 
 
 @router.get("/api/articles/{article_id}")

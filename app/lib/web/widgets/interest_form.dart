@@ -106,6 +106,18 @@ class _InterestFormState extends State<InterestForm> {
   bool _forward = true;
   static const _lastStep = 4;
 
+  /// The steps shown: offline sessions skip "+" follows (2) and sites (3),
+  /// which need the server.
+  List<int> get _shownSteps =>
+      _state.isLive ? const [0, 1, 2, 3, 4] : const [0, 1, 4];
+
+  /// The shown step before (-1) or after (+1) the current one.
+  int _stepBy(int delta) {
+    final steps = _shownSteps;
+    final i = steps.indexOf(_step);
+    return steps[(i < 0 ? 0 : i + delta).clamp(0, steps.length - 1)];
+  }
+
   static final _urlish = RegExp(
     r'https?://|www\.|\.(com|net|org|io)\b',
     caseSensitive: false,
@@ -249,10 +261,13 @@ class _InterestFormState extends State<InterestForm> {
             const SizedBox(height: 32),
             _topics(taxonomy),
             const SizedBox(height: 14),
-            _followSection(taxonomy),
-            const SizedBox(height: 32),
-            _siteSection(),
-            const SizedBox(height: 32),
+            // "+" follows and sites need the server.
+            if (_state.isLive) ...[
+              _followSection(taxonomy),
+              const SizedBox(height: 32),
+              _siteSection(),
+              const SizedBox(height: 32),
+            ],
             _contextSection(),
             const SizedBox(height: 28),
             _footer(taxonomy),
@@ -903,7 +918,7 @@ class _InterestFormState extends State<InterestForm> {
             WebButton(
               label: 'Back',
               primary: false,
-              onTap: () => _goTo(_step - 1),
+              onTap: () => _goTo(_stepBy(-1)),
             ),
           ] else if (widget.secondaryAction != null) ...[
             const SizedBox(width: 12),
@@ -932,7 +947,7 @@ class _InterestFormState extends State<InterestForm> {
                   icon: Icons.arrow_forward_rounded,
                   onTap: last
                       ? () => _submit(taxonomy)
-                      : () => _goTo(_step + 1),
+                      : () => _goTo(_stepBy(1)),
                 ),
               ),
             ),

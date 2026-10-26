@@ -231,41 +231,52 @@ class _PickStep extends StatelessWidget {
   final AppState state;
 
   /// Picking is split into five screens: categories → topics → "+" follows
-  /// → sites → sentence. Only the categories are required.
-  static const _titles = [
-    _StepTitle(
-      overline: '1 / 5 · Categories',
+  /// → sites → sentence. Only the categories are required. Offline sessions
+  /// skip follows and sites (they need the server).
+  static const _steps = [
+    (
+      label: 'Categories',
       title: 'What do you want to read about?',
       subtitle: 'Pick one or more.',
     ),
-    _StepTitle(
-      overline: '2 / 5 · Topics · Optional',
+    (
+      label: 'Topics · Optional',
       title: 'Narrow it down',
       subtitle: 'These topics come first in your Feed.',
     ),
-    _StepTitle(
-      overline: '3 / 5 · Follow · Optional',
+    (
+      label: 'Follow · Optional',
       title: 'Follow something specific',
       subtitle: 'A company, product or person.',
     ),
-    _StepTitle(
-      overline: '4 / 5 · Sites · Optional',
+    (
+      label: 'Sites · Optional',
       title: 'Follow a site',
       subtitle: 'Any newsroom or blog, even without RSS.',
     ),
-    _StepTitle(
-      overline: '5 / 5 · Your why · Optional',
+    (
+      label: 'Your why · Optional',
       title: 'What should your feed help you with?',
       subtitle: 'One sentence, in any language.',
     ),
   ];
+
+  _StepTitle _title(int step) {
+    final shown = state.isLive ? const [0, 1, 2, 3, 4] : const [0, 1, 4];
+    final s = _steps[step];
+    return _StepTitle(
+      overline: '${shown.indexOf(step) + 1} / ${shown.length} · ${s.label}',
+      title: s.title,
+      subtitle: s.subtitle,
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     return InterestForm(
       submitLabel: 'Continue',
       stepped: true,
-      headerBuilder: (step) => _titles[step],
+      headerBuilder: _title,
       initialMacros: state.interests,
       initialMicros: state.interestTags,
       initialFollows: state.follows,

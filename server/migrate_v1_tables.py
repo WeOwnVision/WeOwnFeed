@@ -124,6 +124,21 @@ ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_attempts INT DEFAULT 0;
 ALTER TABLE articles ADD COLUMN IF NOT EXISTS image_last_attempt_at TIMESTAMP WITH TIME ZONE;
 CREATE INDEX IF NOT EXISTS idx_articles_image_healing ON articles (published_at DESC, created_at DESC) 
 WHERE (image_status = 'gradient_fallback' OR image_url IS NULL) AND image_attempts < 3;
+
+-- 10. Copies of a story kept as a name and a link (story_copies.py): only
+-- the best copy is a full article; the others are listed on its card.
+CREATE TABLE IF NOT EXISTS article_mentions (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    article_id UUID NOT NULL REFERENCES articles(id) ON DELETE CASCADE,
+    source VARCHAR(255),
+    title TEXT,
+    url TEXT NOT NULL,
+    published_at TIMESTAMP WITH TIME ZONE,
+    origin VARCHAR(255),
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+    UNIQUE (article_id, url)
+);
+CREATE INDEX IF NOT EXISTS idx_article_mentions_article ON article_mentions (article_id);
 """
 
 def sanitize_and_prewarm_db() -> None:

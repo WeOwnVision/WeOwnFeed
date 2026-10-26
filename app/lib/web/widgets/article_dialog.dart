@@ -7,12 +7,14 @@ import 'package:url_launcher/url_launcher.dart';
 import '../../models/api_models.dart';
 import '../../models/article_ui.dart';
 import '../../services/api_service.dart';
+import '../../services/text_fragment.dart';
 import '../../state/app_state.dart';
 import '../../theme/app_colors.dart';
 import '../../widgets/common.dart';
 import '../../widgets/simple_markdown.dart';
 import '../../widgets/smooth_scroll.dart';
 import '../../widgets/state_views.dart';
+import 'origins_panel.dart';
 import 'tavily_terminal.dart';
 import 'web_ui.dart';
 
@@ -216,7 +218,12 @@ class _ArticleDialogState extends State<_ArticleDialog> {
                             ],
                             if ((detail ?? a).hasAlsoPublished) ...[
                               const SizedBox(height: 16),
-                              _alsoReportedBy(detail ?? a),
+                              (detail ?? a).origins.isNotEmpty
+                                  ? OriginsPanel(
+                                      article: detail ?? a,
+                                      onOpen: _openOriginal,
+                                    )
+                                  : _alsoReportedBy(detail ?? a),
                             ],
                             const SizedBox(height: 22),
                             if (snap.hasError)
@@ -246,7 +253,6 @@ class _ArticleDialogState extends State<_ArticleDialog> {
                                     )
                                   : const SizedBox.shrink(),
                             ),
-                            const SizedBox(height: 24),
                             _researchCard(),
                             const SizedBox(height: 32),
                             const Divider(color: AppColors.border),
@@ -308,7 +314,7 @@ class _ArticleDialogState extends State<_ArticleDialog> {
     );
   }
 
-  /// Other outlets that ran this story; their copies were merged into it.
+  /// Other outlets that ran this story when their origins are unknown.
   Widget _alsoReportedBy(Article a) {
     final others = [
       for (final o in a.alsoPublishedBy)
@@ -443,26 +449,29 @@ class _ArticleDialogState extends State<_ArticleDialog> {
         spacing: 12,
         runSpacing: 12,
         children: [
-          WebButton(
-            label: _factCheck != null
-                ? 'Fact checked'
-                : (_inspecting ? 'Checking facts...' : 'Fact Check'),
-            icon: Icons.verified_user_rounded,
-            primary: _factCheck != null,
-            onTap: () {
-              if (!_inspecting && _factCheck == null) {
-                _startDeepInspect();
-              }
-            },
-          ),
-          WebButton(
-            label: 'Ask WAI',
-            icon: Icons.forum_outlined,
-            onTap: () {
-              Navigator.of(context).pop();
-              _state.askAbout(a);
-            },
-          ),
+          // Offline only a saved Fact Check can be shown, never started.
+          if (_state.isLive || _factCheck != null)
+            WebButton(
+              label: _factCheck != null
+                  ? 'Fact checked'
+                  : (_inspecting ? 'Checking facts...' : 'Fact Check'),
+              icon: Icons.verified_user_rounded,
+              primary: _factCheck != null,
+              onTap: () {
+                if (!_inspecting && _factCheck == null) {
+                  _startDeepInspect();
+                }
+              },
+            ),
+          if (_state.isLive)
+            WebButton(
+              label: 'Ask WAI',
+              icon: Icons.forum_outlined,
+              onTap: () {
+                Navigator.of(context).pop();
+                _state.askAbout(a);
+              },
+            ),
           WebButton(
             label: _state.isSaved(a.id) ? 'Saved' : 'Save',
             icon: _state.isSaved(a.id)
@@ -799,6 +808,16 @@ class _ArticleDialogState extends State<_ArticleDialog> {
                         height: 1.4,
                       ),
                     ),
+                    if ((claim.sourceUrl ?? '').isNotEmpty &&
+                        (claim.quote ?? '').isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      _QuoteLink(
+                        quote: claim.quote!,
+                        onTap: () => _openOriginal(
+                          quoteLink(claim.sourceUrl!, claim.quote!),
+                        ),
+                      ),
+                    ],
                     if (claim.sourceUrl != null &&
                         claim.sourceUrl!.isNotEmpty) ...[
                       const SizedBox(height: 6),
@@ -876,111 +895,113 @@ class _ArticleDialogState extends State<_ArticleDialog> {
               ],
             ),
           ],
-          const SizedBox(height: 20),
-          const Divider(color: AppColors.border),
-          const SizedBox(height: 14),
-          Text(
-            'Ask about this story',
-            style: GoogleFonts.inter(
-              color: AppColors.textPrimary,
-              fontSize: 14,
-              fontWeight: FontWeight.w600,
+          if (_state.isLive) ...[
+            const SizedBox(height: 20),
+            const Divider(color: AppColors.border),
+            const SizedBox(height: 14),
+            Text(
+              'Ask about this story',
+              style: GoogleFonts.inter(
+                color: AppColors.textPrimary,
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          ),
-          const SizedBox(height: 8),
-          if (_qaHistory.isNotEmpty) ...[
-            for (final msg in _qaHistory)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: msg['role'] == 'user'
-                        ? AppColors.surface
-                        : AppColors.quoteBg,
-                    borderRadius: BorderRadius.circular(10),
-                  ),
-                  child: Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Icon(
-                        msg['role'] == 'user'
-                            ? Icons.person_outline_rounded
-                            : Icons.auto_awesome_rounded,
-                        size: 14,
-                        color: msg['role'] == 'user'
-                            ? AppColors.textMuted
-                            : AppColors.accent,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          msg['content'] ?? '',
-                          style: GoogleFonts.inter(
-                            color: AppColors.textPrimary,
-                            fontSize: 12.5,
-                            height: 1.4,
+            const SizedBox(height: 8),
+            if (_qaHistory.isNotEmpty) ...[
+              for (final msg in _qaHistory)
+                Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Container(
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      color: msg['role'] == 'user'
+                          ? AppColors.surface
+                          : AppColors.quoteBg,
+                      borderRadius: BorderRadius.circular(10),
+                    ),
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Icon(
+                          msg['role'] == 'user'
+                              ? Icons.person_outline_rounded
+                              : Icons.auto_awesome_rounded,
+                          size: 14,
+                          color: msg['role'] == 'user'
+                              ? AppColors.textMuted
+                              : AppColors.accent,
+                        ),
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            msg['content'] ?? '',
+                            style: GoogleFonts.inter(
+                              color: AppColors.textPrimary,
+                              fontSize: 12.5,
+                              height: 1.4,
+                            ),
                           ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
-              ),
-            const SizedBox(height: 8),
-          ],
-          Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _askCtrl,
-                  style: GoogleFonts.inter(
-                    color: AppColors.textPrimary,
-                    fontSize: 13,
-                  ),
-                  decoration: InputDecoration(
-                    hintText:
-                        'Ask a question grounded in this verified report...',
-                    hintStyle: GoogleFonts.inter(
-                      color: AppColors.textMuted,
+              const SizedBox(height: 8),
+            ],
+            Row(
+              children: [
+                Expanded(
+                  child: TextField(
+                    controller: _askCtrl,
+                    style: GoogleFonts.inter(
+                      color: AppColors.textPrimary,
                       fontSize: 13,
                     ),
-                    isDense: true,
-                    contentPadding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
+                    decoration: InputDecoration(
+                      hintText:
+                          'Ask a question grounded in this verified report...',
+                      hintStyle: GoogleFonts.inter(
+                        color: AppColors.textMuted,
+                        fontSize: 13,
+                      ),
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(
+                        horizontal: 14,
+                        vertical: 10,
+                      ),
+                      filled: true,
+                      fillColor: AppColors.surface,
+                      border: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      enabledBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: AppColors.border),
+                      ),
+                      focusedBorder: OutlineInputBorder(
+                        borderRadius: BorderRadius.circular(10),
+                        borderSide: const BorderSide(color: AppColors.accent),
+                      ),
                     ),
-                    filled: true,
-                    fillColor: AppColors.surface,
-                    border: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: AppColors.border),
-                    ),
-                    enabledBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: AppColors.border),
-                    ),
-                    focusedBorder: OutlineInputBorder(
-                      borderRadius: BorderRadius.circular(10),
-                      borderSide: const BorderSide(color: AppColors.accent),
-                    ),
+                    onSubmitted: (_) => _askArticleQuestion(),
                   ),
-                  onSubmitted: (_) => _askArticleQuestion(),
                 ),
-              ),
-              const SizedBox(width: 8),
-              WebButton(
-                label: _asking ? 'Thinking...' : 'Ask',
-                icon: Icons.send_rounded,
-                primary: true,
-                onTap: () {
-                  if (!_asking) {
-                    _askArticleQuestion();
-                  }
-                },
-              ),
-            ],
-          ),
+                const SizedBox(width: 8),
+                WebButton(
+                  label: _asking ? 'Thinking...' : 'Ask',
+                  icon: Icons.send_rounded,
+                  primary: true,
+                  onTap: () {
+                    if (!_asking) {
+                      _askArticleQuestion();
+                    }
+                  },
+                ),
+              ],
+            ),
+          ],
         ],
       ),
     );
@@ -988,19 +1009,24 @@ class _ArticleDialogState extends State<_ArticleDialog> {
 
   /// Tavily Research in its own card. It runs in [AppState], so the spinner
   /// keeps going after the dialog closes and reopens.
+  /// Offline sessions show only a saved report (Research needs the server).
   Widget _researchCard() {
     return ListenableBuilder(
       listenable: _state,
-      builder: (context, _) => Container(
-        width: double.infinity,
-        padding: const EdgeInsets.all(20),
-        decoration: BoxDecoration(
-          color: AppColors.surfaceAlt,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: AppColors.border),
-        ),
-        child: _researchSection(context),
-      ),
+      builder: (context, _) =>
+          !_state.isLive && _state.researchFor(widget.article.id) == null
+          ? const SizedBox.shrink()
+          : Container(
+              margin: const EdgeInsets.only(top: 24),
+              width: double.infinity,
+              padding: const EdgeInsets.all(20),
+              decoration: BoxDecoration(
+                color: AppColors.surfaceAlt,
+                borderRadius: BorderRadius.circular(16),
+                border: Border.all(color: AppColors.border),
+              ),
+              child: _researchSection(context),
+            ),
     );
   }
 
@@ -1401,6 +1427,67 @@ class _CommentTile extends StatelessWidget {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// The verbatim evidence sentence; tapping opens the source scrolled to it,
+/// highlighted ([quoteLink]).
+class _QuoteLink extends StatelessWidget {
+  const _QuoteLink({required this.quote, required this.onTap});
+
+  final String quote;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return Hoverable(
+      onTap: onTap,
+      builder: (context, hovered) => Container(
+        width: double.infinity,
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 8),
+        decoration: BoxDecoration(
+          color: hovered ? AppColors.surfaceAlt : AppColors.quoteBg,
+          borderRadius: BorderRadius.circular(8),
+          border: const Border(
+            left: BorderSide(color: AppColors.mint, width: 3),
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '“$quote”',
+              style: GoogleFonts.sourceSerif4(
+                color: AppColors.textPrimary,
+                fontSize: 13.5,
+                fontStyle: FontStyle.italic,
+                height: 1.45,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Icon(
+                  Icons.format_quote_rounded,
+                  size: 14,
+                  color: AppColors.mint,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'Show this sentence in the source',
+                  style: GoogleFonts.inter(
+                    color: AppColors.mint,
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

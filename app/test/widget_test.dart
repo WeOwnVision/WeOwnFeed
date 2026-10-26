@@ -13,6 +13,7 @@ import 'package:weownfeed/services/api_service.dart';
 import 'package:weownfeed/state/app_state.dart';
 import 'package:weownfeed/web/web_gate.dart';
 import 'package:weownfeed/web/web_shell.dart';
+import 'package:weownfeed/web/widgets/origins_panel.dart';
 import 'package:weownfeed/web/widgets/web_ui.dart';
 
 Map<String, Object?> _article(int i) => {
@@ -980,5 +981,62 @@ void main() {
       findsOneWidget,
     );
     expect(find.textContaining('Also published by'), findsOneWidget);
+  });
+
+  testWidgets('origins panel collapses outlets into independent origins', (
+    tester,
+  ) async {
+    final story = Article.fromJson({
+      ..._article(1),
+      'source': 'reuters.com',
+      'also_published_by': [
+        {
+          'id': 'c1',
+          'source': 'yahoo.com',
+          'title': 'Copy',
+          'url': 'https://yahoo.com/a',
+        },
+        {
+          'id': 'c2',
+          'source': 'techcrunch.com',
+          'title': 'Own',
+          'url': 'https://techcrunch.com/b',
+        },
+      ],
+      'also_published_by_count': 2,
+      'origins': [
+        {
+          'name': 'Reuters',
+          'wire': true,
+          'outlets': ['reuters.com', 'yahoo.com'],
+        },
+        {
+          'name': 'techcrunch.com',
+          'wire': false,
+          'outlets': ['techcrunch.com'],
+        },
+      ],
+    });
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Material(
+          child: Column(
+            children: [
+              AlsoPublishedLine(story),
+              OriginsPanel(article: story, onOpen: (_) {}),
+            ],
+          ),
+        ),
+      ),
+    );
+    expect(find.text('3 outlets · 2 origins'), findsOneWidget);
+    expect(find.text('3 outlets'), findsOneWidget);
+    expect(find.textContaining('Reuters wire'), findsNothing);
+
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+    expect(find.text('Reuters wire · 2 outlets'), findsOneWidget);
+    expect(find.text('Own reporting'), findsOneWidget);
+    expect(find.textContaining('2 independent origins'), findsOneWidget);
   });
 }

@@ -843,7 +843,44 @@ class AlsoPublishedLine extends StatelessWidget {
             ),
           ),
         ),
+        if (article.origins.isNotEmpty) ...[
+          const SizedBox(width: 8),
+          OriginsCount(article),
+        ],
       ],
+    );
+  }
+}
+
+/// "7 outlets · 2 origins": copies that share a wire byline count once.
+class OriginsCount extends StatelessWidget {
+  const OriginsCount(this.article, {super.key});
+
+  final Article article;
+
+  @override
+  Widget build(BuildContext context) {
+    final outlets = article.alsoPublishedByCount + 1;
+    final origins = article.origins.length;
+    return Tooltip(
+      message:
+          'Outlets that reprint the same wire story count as one '
+          'independent origin.',
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+        decoration: BoxDecoration(
+          color: AppColors.mint.withValues(alpha: 0.12),
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: Text(
+          '$outlets outlets · $origins ${origins == 1 ? 'origin' : 'origins'}',
+          style: GoogleFonts.inter(
+            color: AppColors.mint,
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+          ),
+        ),
+      ),
     );
   }
 }

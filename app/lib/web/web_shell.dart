@@ -3,6 +3,7 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../services/api_service.dart';
 import '../state/app_state.dart';
 import '../theme/app_colors.dart';
 import '../widgets/common.dart';
@@ -76,12 +77,13 @@ class WebShell extends StatelessWidget {
     ),
   ];
 
-  Widget _pageBody(int index) => switch (index) {
+  Widget _pageBody(int index, {required bool live}) => switch (index) {
     AppState.navFeed => const WebFeedPage(),
-    AppState.navChat => const WebChatPage(),
+    // WAI and Site Watch need the server; offline sessions go home.
+    AppState.navChat when live => const WebChatPage(),
     AppState.navDiscover => const WebDiscoverPage(),
     AppState.navResearch => const WebResearchPage(),
-    AppState.navSites => const WebSitesPage(),
+    AppState.navSites when live => const WebSitesPage(),
     AppState.navProfile => const WebProfilePage(),
     _ => const WebHomePage(),
   };
@@ -117,6 +119,7 @@ class WebShell extends StatelessWidget {
                           showSearch: index != AppState.navDiscover,
                         ),
                         if (state.isOffline) const _OfflineBanner(),
+                        if (_debug) _ModeBadge(live: state.isLive),
                         Expanded(
                           // Reading text follows the text size in Settings.
                           child: MediaQuery(
@@ -127,7 +130,7 @@ class WebShell extends StatelessWidget {
                               duration: const Duration(milliseconds: 220),
                               child: KeyedSubtree(
                                 key: ValueKey(index),
-                                child: _pageBody(index),
+                                child: _pageBody(index, live: state.isLive),
                               ),
                             ),
                           ),
@@ -184,6 +187,9 @@ class _WebPage {
 class _SideNav extends StatelessWidget {
   const _SideNav({required this.currentIndex, required this.onTap});
 
+  /// Menu items hidden in offline sessions.
+  static const _onlineOnly = {AppState.navChat, AppState.navSites};
+
   final int currentIndex;
   final ValueChanged<int> onTap;
 
@@ -237,40 +243,42 @@ class _SideNav extends StatelessWidget {
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  for (var i = 0; i < WebShell.pages.length; i++) ...[
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: i == AppState.navFeed
-                          ? _SideNavTile(
-                              page: WebShell.pages[i],
-                              selected: onFeed && state.feedCategory == null,
-                              badge: unread(null),
-                              onTap: () => state.openFeed(null),
-                            )
-                          : _SideNavTile(
-                              page: WebShell.pages[i],
-                              selected: i == currentIndex,
-                              badge:
-                                  i == AppState.navResearch &&
-                                      state.researchingCount > 0
-                                  ? state.researchingCount
-                                  : null,
-                              onTap: () => onTap(i),
+                  for (var i = 0; i < WebShell.pages.length; i++)
+                    if (state.isLive || !_onlineOnly.contains(i)) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: 4),
+                        child: i == AppState.navFeed
+                            ? _SideNavTile(
+                                page: WebShell.pages[i],
+                                selected: onFeed && state.feedCategory == null,
+                                badge: unread(null),
+                                onTap: () => state.openFeed(null),
+                              )
+                            : _SideNavTile(
+                                page: WebShell.pages[i],
+                                selected: i == currentIndex,
+                                badge:
+                                    i == AppState.navResearch &&
+                                        state.researchingCount > 0
+                                    ? state.researchingCount
+                                    : null,
+                                onTap: () => onTap(i),
+                              ),
+                      ),
+                      // The user's main categories are WOF Feed's sub-tabs.
+                      if (i == AppState.navFeed)
+                        for (final category in state.interests)
+                          Padding(
+                            padding: const EdgeInsets.only(bottom: 2),
+                            child: _SubNavTile(
+                              label: category,
+                              selected:
+                                  onFeed && state.feedCategory == category,
+                              badge: unread(category),
+                              onTap: () => state.openFeed(category),
                             ),
-                    ),
-                    // The user's main categories are WOF Feed's sub-tabs.
-                    if (i == AppState.navFeed)
-                      for (final category in state.interests)
-                        Padding(
-                          padding: const EdgeInsets.only(bottom: 2),
-                          child: _SubNavTile(
-                            label: category,
-                            selected: onFeed && state.feedCategory == category,
-                            badge: unread(category),
-                            onTap: () => state.openFeed(category),
                           ),
-                        ),
-                  ],
+                    ],
                 ],
               ),
             ),
@@ -772,6 +780,34 @@ class _NotificationsButton extends StatelessWidget {
                 ),
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+/// `?debug=1` in the address shows the session's backend mode.
+final bool _debug = Uri.base.queryParameters['debug'] == '1';
+
+class _ModeBadge extends StatelessWidget {
+  const _ModeBadge({required this.live});
+
+  final bool live;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 40, vertical: 6),
+      color: AppColors.surfaceAlt,
+      child: Text(
+        live
+            ? 'debug · live server (${ApiService.defaultBaseUrl})'
+            : 'debug · offline demo (bundled data)',
+        style: GoogleFonts.inter(
+          color: live ? AppColors.mint : AppColors.contested,
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
         ),
       ),
     );

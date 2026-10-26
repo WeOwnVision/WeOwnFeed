@@ -199,6 +199,8 @@ def map_evidence_to_fact_check_result(
         
         evidence_summary = ""
         source_url = None
+        # The verbatim sentence from source_url; the app opens the page at it.
+        span_text = ""
         if sup:
             best_sup = sup[0]
             source_url = best_sup.get("url")
@@ -221,7 +223,8 @@ def map_evidence_to_fact_check_result(
             "claim": c.get("claim", ""),
             "status": flutter_status,
             "evidence_summary": evidence_summary,
-            "source_url": source_url
+            "source_url": source_url,
+            "quote": span_text or None
         })
         
     origins = card.get("origin_breakdown", [])
@@ -273,12 +276,37 @@ def map_evidence_to_fact_check_result(
     }
 
 
+def _story_copies(art_id: str) -> List[Dict[str, Any]]:
+    """Other outlets' copies of a story for Fact Check: full articles linked
+    later (with text) and copies kept as a name and a link (with the origin
+    read when they were fetched). Copies are one story, not independent
+    support, and their outlets are left out of the evidence searches."""
+    try:
+        with get_db() as cur:
+            cur.execute("""
+                SELECT title, tldr, clean_text, original_url, published_at, NULL
+                FROM articles WHERE duplicate_of = %s
+                UNION ALL
+                SELECT title, NULL, NULL, url, published_at, origin
+                FROM article_mentions WHERE article_id = %s;
+            """, (art_id, art_id))
+            rows = cur.fetchall()
+    except Exception as e:
+        logger.warning("[Fact Check] Copies of %s not loaded: %s", art_id, e)
+        return []
+    return [
+        {"title": r[0], "tldr": r[1] or "", "text": r[2] or "", "url": r[3],
+         "published_at": r[4], **({"origin": r[5]} if r[5] else {})}
+        for r in rows
+    ]
+
+
 def _run_deep_inspection_sync(broadcaster: InspectionBroadcaster, art_id: str, art_doc: Dict[str, Any]):
     try:
         broadcaster.broadcast("status", "Extracting core factual assertions from article...")
         broadcaster.broadcast("status", "Querying Tavily web verification horizon (3 search angles)...")
         
-        evidence_card = verify_cluster_evidence([art_doc], cluster_id=art_id)
+        evidence_card = verify_cluster_evidence([art_doc, *_story_copies(art_id)], cluster_id=art_id)
         
         broadcaster.broadcast("status", "Synthesizing consensus and checking wire syndication...")
         
