@@ -756,8 +756,10 @@ def tavily_research(
         return mock_data
 
     client = get_tavily_client()
+    # A failure is reported as status "failed" with no report, so callers
+    # never store the error text as a finished report.
     if not client:
-        return {"report": "Research client unavailable.", "sources": []}
+        return {"status": "failed", "error": "Research client unavailable.", "report": "", "sources": []}
 
     t0 = time.perf_counter()
     est_credits = CREDIT_ESTIMATES["research_pro"] if model == "pro" else CREDIT_ESTIMATES["research_mini"]
@@ -799,7 +801,7 @@ def tavily_research(
         latency = int((time.perf_counter() - t0) * 1000)
         logger.error("[Tavily] research error for '%s': %s", input_query[:40], e)
         log_tavily_call("research", purpose, params_hash, 0.0, latency, 0, cache_hit=False, is_mock=False, detail=res_detail)
-        return {"report": f"Research failed: {e}", "sources": []}
+        return {"status": "failed", "error": f"Research failed: {e}", "report": "", "sources": []}
 
 
 # =====================================================================

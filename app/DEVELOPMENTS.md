@@ -146,7 +146,7 @@ check → ~8 MB raw / ~2.5 MB gzip for ~1,500 stories.
 | T3.1–T3.7 | ✅ | `lib/offline/` (4 files), AppState wiring; 21 new tests, 115/115 green |
 | T4.1–T4.2 | ✅ | `isLive` gating in 7 UI files + `?debug=1` badge; 116/116 green |
 | T5.1–T5.3 | 🔶 | T5.1 done; T5.3 (a) offline run checked by the user; (b), (c) pending |
-| T6.1–T6.3 | 🔶 | T6.1–T6.2 done: https://weownfeed.vercel.app (offline); T6.3 pending |
+| T6.1–T6.3 | ✅ | https://weownfeed.vercel.app (offline); committed as `5583204` |
 
 ## Log
 
@@ -236,3 +236,13 @@ check → ~8 MB raw / ~2.5 MB gzip for ~1,500 stories.
   - `vercel link` tried to connect the GitHub repo on its own and failed (no access); the project stays unconnected. It also wrote `.env.local` (a Vercel OIDC token) and a `.gitignore` into `build/web`; `.env.local` was deleted before the upload. Both live only in the ignored build folder, so a rebuild removes the link: run `vercel link` again before the next deploy.
   - The prebuilt upload has no `vercel.json`, so the no-cache headers of T6.2 are not applied (Vercel's default for static files is `max-age=0, must-revalidate`).
   - Firefox-based browsers render this Flutter build noticeably slower; not addressed.
+
+### 2026-10-26 — T6.3: Commit
+- **What:** the user committed and pushed from the repo root (`WeOwnFeed-public`, origin `WeOwnVision/WeOwnFeed`): `5583204 Offline demo mode`, 40 files (app offline mode, snapshot, export tool, tests, docs; server story copies / "Also published").
+- **Result:** local `main` equals `origin/main` (`5583204`), working tree clean; `app/assets/offline/snapshot.json` and `app/lib/offline/` are tracked.
+- **Conditions / deviations:** this log entry and the status row change come after the commit and are not committed yet.
+
+### 2026-10-26 — Server fix: failed Research is no longer saved as a report
+- **What:** `server/tavily_service.py` `tavily_research`: a Tavily error (and a missing client) now returns `{"status": "failed", "error": …, "report": "", "sources": []}` instead of `{"report": "Research failed: …"}`. With no report, `POST /api/articles/{id}/deep-inspect/research` takes its existing `failed` branch: nothing is saved, the app shows "Research could not finish" and the user can start it again. New test `test_failed_research_is_not_a_report` in `server/tests/test_tavily_integration.py`.
+- **Result:** server tests **124 / 124** (`pytest tests --ignore=tests/live`). No credits spent.
+- **Conditions / deviations:** `POST /api/tavily/research` (ingestion secret only) now also returns the failed shape. The running local API keeps the old code until it restarts. Not committed yet.

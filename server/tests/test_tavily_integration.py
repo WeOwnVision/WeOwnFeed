@@ -93,6 +93,27 @@ def test_mock_research():
         tavily_service.TAVILY_MOCK = orig
 
 
+def test_failed_research_is_not_a_report(monkeypatch):
+    """A Tavily error comes back as status "failed" with no report, so the
+    article research endpoint never saves it as a completed report."""
+    class Failing:
+        def research(self, **_):
+            raise RuntimeError("This request exceeds your plan's set usage limit.")
+
+    monkeypatch.setattr(tavily_service, "TAVILY_MOCK", False)
+    monkeypatch.setattr(tavily_service, "get_tavily_client", lambda: Failing())
+    monkeypatch.setattr(tavily_service, "log_tavily_call", lambda *a, **k: None)
+    resp = tavily_research("Failing research query for the status test")
+    assert resp["status"] == "failed"
+    assert not resp["report"]
+    assert "usage limit" in resp["error"]
+
+    monkeypatch.setattr(tavily_service, "get_tavily_client", lambda: None)
+    resp = tavily_research("Research without a client for the status test")
+    assert resp["status"] == "failed"
+    assert not resp["report"]
+
+
 def test_mock_web_verify():
     orig = tavily_service.TAVILY_MOCK
     tavily_service.TAVILY_MOCK = True
