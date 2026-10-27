@@ -1,13 +1,14 @@
 <div align="center">
 
-<img src="docs/assets/banner.png" alt="WeOwnFeed (WOF)" width="760">
-
-### **Own your feed. Every story, with receipts.**
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/assets/banner-dark.svg">
+  <img src="docs/assets/banner-light.svg" alt="WeOwnFeed (WOF): Own your feed. Every story, with receipts." width="820">
+</picture>
 
 *An algorithmic-free, demand-driven personal news intelligence platform powered by **NVIDIA Nemotron-3**, **Nebius Token Factory**, and **Tavily's 5-Endpoint Web Suite**.*
 
-[![Live Demo](https://img.shields.io/badge/Live_Demo-Launch_App-00E676?style=for-the-badge&logo=googlechrome&logoColor=white)](https://weownfeed.vercel.app/)
-[![Pitch Video](https://img.shields.io/badge/Video_Pitch-Watch_on_YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://www.youtube.com/watch?v=pBR2M1FqAE0)
+[![Live Demo](https://img.shields.io/badge/Live_Demo-Launch_App-00C853?style=for-the-badge&logo=googlechrome&logoColor=white&labelColor=00873A)](https://weownfeed.vercel.app/)
+[![Pitch Video](https://img.shields.io/badge/Video_Pitch-Watch_on_YouTube-FF0000?style=for-the-badge&logo=youtube&logoColor=white&labelColor=B00000)](https://www.youtube.com/watch?v=pBR2M1FqAE0)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg?style=for-the-badge)](LICENSE)
 [![Track](https://img.shields.io/badge/Track-Best_Apps_&_Agents-76B900?style=for-the-badge&logo=nvidia&logoColor=white)](#)
 
