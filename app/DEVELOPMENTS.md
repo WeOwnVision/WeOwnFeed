@@ -246,3 +246,8 @@ check → ~8 MB raw / ~2.5 MB gzip for ~1,500 stories.
 - **What:** `server/tavily_service.py` `tavily_research`: a Tavily error (and a missing client) now returns `{"status": "failed", "error": …, "report": "", "sources": []}` instead of `{"report": "Research failed: …"}`. With no report, `POST /api/articles/{id}/deep-inspect/research` takes its existing `failed` branch: nothing is saved, the app shows "Research could not finish" and the user can start it again. New test `test_failed_research_is_not_a_report` in `server/tests/test_tavily_integration.py`.
 - **Result:** server tests **124 / 124** (`pytest tests --ignore=tests/live`). No credits spent.
 - **Conditions / deviations:** `POST /api/tavily/research` (ingestion secret only) now also returns the failed shape. The running local API keeps the old code until it restarts. Not committed yet.
+
+### 2026-10-27 — App icons: WOF logo instead of the Flutter defaults
+- **What:** `web/favicon.png` (64 px) and `web/icons/Icon-{192,512}.png`, `Icon-maskable-{192,512}.png` made from `Images/WOF_LOGO_SQUARE.jpg` (Pillow in a scratchpad venv, not a project dependency): the favicon and normal icons are cropped around the logo, the maskable icons use the whole image so the logo stays inside the safe zone. Offline build and Vercel deploy as in T6.2.
+- **Result:** https://weownfeed.vercel.app serves the new favicon and icons (checked against the local files).
+- **Conditions / deviations:** browsers cache favicons; an open tab may show the old icon until a hard reload.
